@@ -26,6 +26,9 @@
     "singleQuote": true,
     "trailingComma": "es5"
   },
+  "dependencies": {
+    "semver": "7.7.4"
+  },
   "overrides": {
     "@jest/types": "30.3.0",
     "esbuild": "0.28.0",

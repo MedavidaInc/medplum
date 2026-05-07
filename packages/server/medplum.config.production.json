@@ -1,0 +1,29 @@
+{
+  "port": 8103,
+  "baseUrl": "http://medavida-alb-1587839797.us-east-2.elb.amazonaws.com/",
+  "appBaseUrl": "https://app.medavida.com/",
+  "storageBaseUrl": "http://medavida-alb-1587839797.us-east-2.elb.amazonaws.com/storage/",
+  "binaryStorage": "file:./binary/",
+  "supportEmail": "support@medavida.com",
+  "vmContextBotsEnabled": true,
+  "defaultBotRuntimeVersion": "vmcontext",
+  "allowedOrigins": "*",
+  "introspectionEnabled": true,
+  "database": {
+    "host": "medavida-staging.czsg0qgye6mw.us-east-2.rds.amazonaws.com",
+    "port": 5432,
+    "dbname": "medavida",
+    "username": "medavida",
+    "password": "wdY4RMWTPMcLfxPTVI0giBxVRvMm87os",
+    "ssl": { "rejectUnauthorized": false }
+  },
+  "redis": {
+    "host": "medavida-staging.eghfw4.0001.use2.cache.amazonaws.com",
+    "port": 6379
+  },
+  "bullmq": {
+    "removeOnFail": {"count": 1},
+    "removeOnComplete": {"count": 1}
+  },
+  "shutdownTimeoutMilliseconds": 30000
+}
