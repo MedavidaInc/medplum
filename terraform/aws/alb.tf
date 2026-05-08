@@ -1,5 +1,5 @@
 resource "aws_lb" "main" {
-  name               = "medavida-${var.environment}"
+  name               = "medavida-alb"
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
@@ -7,7 +7,7 @@ resource "aws_lb" "main" {
 }
 
 resource "aws_lb_target_group" "server" {
-  name        = "medavida-${var.environment}-server"
+  name        = "medavida-medplum-tg"
   port        = 8103
   protocol    = "HTTP"
   vpc_id      = aws_vpc.main.id

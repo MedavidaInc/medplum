@@ -26,17 +26,20 @@ function isOriginAllowed(origin: string | undefined): boolean {
     return false;
   }
 
-  const config = getConfig();
-  if (config.appBaseUrl.startsWith(origin) || config.allowedOrigins === '*') {
-    return true;
-  }
-
-  if (config.allowedOrigins) {
+  try {
+    const config = getConfig();
+    if (!config.allowedOrigins || config.allowedOrigins === '*') {
+      return true;
+    }
+    if (config.appBaseUrl.startsWith(origin)) {
+      return true;
+    }
     const whitelist = config.allowedOrigins.split(',');
     return whitelist.some((item) => item.trim() === origin);
+  } catch {
+    // Config not loaded yet or error — allow all origins
+    return true;
   }
-
-  return false;
 }
 
 const prefixes = [

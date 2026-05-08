@@ -1,14 +1,7 @@
 #!/usr/bin/env bash
 
-if [[ -z "${ECS_CLUSTER}" ]]; then
-  echo "ECS_CLUSTER is missing"
-  exit 1
-fi
-
-if [[ -z "${ECS_SERVICE}" ]]; then
-  echo "ECS_SERVICE is missing"
-  exit 1
-fi
+ECS_CLUSTER="${ECS_CLUSTER:-medavida}"
+ECS_SERVICE="${ECS_SERVICE:-medavida-medplum}"
 
 # Fail on error
 set -e
@@ -18,6 +11,7 @@ set -x
 
 # Update the medplum fargate service
 aws ecs update-service \
+  --region "${AWS_REGION:-us-east-2}" \
   --cluster "$ECS_CLUSTER" \
   --service "$ECS_SERVICE" \
   --force-new-deployment

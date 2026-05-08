@@ -1,7 +1,7 @@
 variable "aws_region" {
   description = "AWS region for all resources"
   type        = string
-  default     = "us-east-1"
+  default     = "us-east-2"
 }
 
 variable "environment" {
@@ -20,7 +20,7 @@ variable "app_domain" {
 }
 
 variable "certificate_arn" {
-  description = "ACM certificate ARN for the app_domain (must be in us-east-1)"
+  description = "ACM certificate ARN for the app_domain (must be in us-east-2)"
   type        = string
 }
 
@@ -35,7 +35,7 @@ variable "vpc_cidr" {
 variable "availability_zones" {
   description = "AZs to deploy into (at least 2 for RDS multi-AZ)"
   type        = list(string)
-  default     = ["us-east-1a", "us-east-1b"]
+  default     = ["us-east-2a", "us-east-2b"]
 }
 
 # ─── ECS / App ────────────────────────────────────────────────────────────────
@@ -78,16 +78,10 @@ variable "db_username" {
   default     = "medplum"
 }
 
-variable "rds_min_capacity" {
-  description = "Aurora Serverless v2 min ACUs"
-  type        = number
-  default     = 0.5
-}
-
-variable "rds_max_capacity" {
-  description = "Aurora Serverless v2 max ACUs"
-  type        = number
-  default     = 4
+variable "db_password" {
+  description = "Postgres master password"
+  type        = string
+  sensitive   = true
 }
 
 # ─── Redis ────────────────────────────────────────────────────────────────────
@@ -95,7 +89,7 @@ variable "rds_max_capacity" {
 variable "redis_node_type" {
   description = "ElastiCache node type"
   type        = string
-  default     = "cache.t4g.small"
+  default     = "cache.t4g.micro"
 }
 
 # ─── Storage ──────────────────────────────────────────────────────────────────

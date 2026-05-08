@@ -25,7 +25,7 @@ output "ecs_service_name" {
 
 output "rds_endpoint" {
   description = "RDS cluster writer endpoint"
-  value       = aws_rds_cluster.main.endpoint
+  value       = aws_db_instance.main.address
   sensitive   = true
 }
 

@@ -1,5 +1,5 @@
 resource "aws_ecr_repository" "server" {
-  name                 = "medavida/server"
+  name                 = "medavida-medplum"
   image_tag_mutability = "MUTABLE"
 
   image_scanning_configuration {

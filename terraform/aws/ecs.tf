@@ -3,14 +3,14 @@ data "aws_caller_identity" "current" {}
 # ─── CloudWatch log group ─────────────────────────────────────────────────────
 
 resource "aws_cloudwatch_log_group" "server" {
-  name              = "/ecs/medavida-${var.environment}-server"
+  name              = "/ecs/medavida/medplum"
   retention_in_days = var.environment == "production" ? 90 : 14
 }
 
 # ─── IAM roles ────────────────────────────────────────────────────────────────
 
 resource "aws_iam_role" "ecs_execution" {
-  name = "medavida-${var.environment}-ecs-execution"
+  name = "medavida-ecs-execution-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -37,13 +37,13 @@ resource "aws_iam_role_policy" "ecs_execution_secrets" {
     Statement = [{
       Effect   = "Allow"
       Action   = ["secretsmanager:GetSecretValue"]
-      Resource = "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:medavida/${var.environment}/*"
+      Resource = "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:medavida/*"
     }]
   })
 }
 
 resource "aws_iam_role" "ecs_task" {
-  name = "medavida-${var.environment}-ecs-task"
+  name = "medavida-ecs-task-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -58,7 +58,7 @@ resource "aws_iam_role" "ecs_task" {
 # ─── ECS cluster ──────────────────────────────────────────────────────────────
 
 resource "aws_ecs_cluster" "main" {
-  name = "medavida-${var.environment}"
+  name = "medavida"
 
   setting {
     name  = "containerInsights"
@@ -79,7 +79,7 @@ resource "aws_ecs_cluster_capacity_providers" "main" {
 # ─── Task definition ──────────────────────────────────────────────────────────
 
 resource "aws_ecs_task_definition" "server" {
-  family                   = "medavida-${var.environment}-server"
+  family                   = "medavida-medplum"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
   cpu                      = var.server_cpu
@@ -106,23 +106,19 @@ resource "aws_ecs_task_definition" "server" {
         { name = "MEDPLUM_VM_CONTEXT_BOTS_ENABLED", value = "true" },
         { name = "MEDPLUM_DEFAULT_BOT_RUNTIME_VERSION", value = "vmcontext" },
         { name = "MEDPLUM_ALLOWED_ORIGINS", value = var.app_base_url },
-        { name = "MEDPLUM_DATABASE_HOST", value = aws_rds_cluster.main.endpoint },
+        { name = "MEDPLUM_DATABASE_HOST", value = aws_db_instance.main.address },
         { name = "MEDPLUM_DATABASE_PORT", value = "5432" },
         { name = "MEDPLUM_DATABASE_NAME", value = var.db_name },
         { name = "MEDPLUM_DATABASE_USERNAME", value = var.db_username },
-        { name = "MEDPLUM_REDIS_HOST", value = aws_elasticache_replication_group.main.primary_endpoint_address },
+        { name = "MEDPLUM_REDIS_HOST", value = aws_elasticache_cluster.main.cache_nodes[0].address },
         { name = "MEDPLUM_REDIS_PORT", value = "6379" },
-        { name = "MEDPLUM_REDIS_TLS", value = "true" },
+        { name = "MEDPLUM_REDIS_TLS", value = "false" },
       ]
 
       secrets = [
         {
           name      = "MEDPLUM_DATABASE_PASSWORD"
           valueFrom = aws_secretsmanager_secret.db_password.arn
-        },
-        {
-          name      = "MEDPLUM_REDIS_PASSWORD"
-          valueFrom = aws_secretsmanager_secret.redis_password.arn
         },
       ]
 
@@ -149,7 +145,7 @@ resource "aws_ecs_task_definition" "server" {
 # ─── ECS service ──────────────────────────────────────────────────────────────
 
 resource "aws_ecs_service" "server" {
-  name                               = "medavida-${var.environment}-server"
+  name                               = "medavida-medplum"
   cluster                            = aws_ecs_cluster.main.id
   task_definition                    = aws_ecs_task_definition.server.arn
   desired_count                      = var.server_desired_count

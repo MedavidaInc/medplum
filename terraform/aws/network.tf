@@ -90,8 +90,8 @@ resource "aws_route_table_association" "private" {
 # ─── Security groups ──────────────────────────────────────────────────────────
 
 resource "aws_security_group" "alb" {
-  name        = "medavida-${var.environment}-alb"
-  description = "ALB - allow inbound HTTPS from internet"
+  name        = "medavida-alb-sg"
+  description = "ALB: allow HTTP inbound from internet"
   vpc_id      = aws_vpc.main.id
 
   ingress {
@@ -115,8 +115,8 @@ resource "aws_security_group" "alb" {
 }
 
 resource "aws_security_group" "ecs" {
-  name        = "medavida-${var.environment}-ecs"
-  description = "ECS tasks - allow inbound from ALB only"
+  name        = "medavida-ecs-sg"
+  description = "ECS tasks: allow inbound from ALB only"
   vpc_id      = aws_vpc.main.id
 
   ingress {
@@ -134,8 +134,8 @@ resource "aws_security_group" "ecs" {
 }
 
 resource "aws_security_group" "rds" {
-  name        = "medavida-${var.environment}-rds"
-  description = "RDS - allow inbound from ECS only"
+  name        = "medavida-rds-sg"
+  description = "RDS: allow PostgreSQL from ECS tasks only"
   vpc_id      = aws_vpc.main.id
 
   ingress {
@@ -147,8 +147,8 @@ resource "aws_security_group" "rds" {
 }
 
 resource "aws_security_group" "redis" {
-  name        = "medavida-${var.environment}-redis"
-  description = "ElastiCache - allow inbound from ECS only"
+  name        = "medavida-redis-sg"
+  description = "Redis: allow from ECS tasks only"
   vpc_id      = aws_vpc.main.id
 
   ingress {
