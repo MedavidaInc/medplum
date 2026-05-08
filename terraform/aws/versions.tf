@@ -39,3 +39,17 @@ provider "aws" {
     }
   }
 }
+
+# S3 bucket was created in us-east-1; S3 bucket names are global so we can't recreate it
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+
+  default_tags {
+    tags = {
+      Project     = "medavida"
+      Environment = var.environment
+      ManagedBy   = "terraform"
+    }
+  }
+}

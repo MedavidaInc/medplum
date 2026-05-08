@@ -3,18 +3,21 @@ locals {
 }
 
 resource "aws_s3_bucket" "binaries" {
-  bucket = local.binary_bucket_name
+  provider = aws.us_east_1
+  bucket   = local.binary_bucket_name
 }
 
 resource "aws_s3_bucket_versioning" "binaries" {
-  bucket = aws_s3_bucket.binaries.id
+  provider = aws.us_east_1
+  bucket   = aws_s3_bucket.binaries.id
   versioning_configuration {
     status = "Enabled"
   }
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "binaries" {
-  bucket = aws_s3_bucket.binaries.id
+  provider = aws.us_east_1
+  bucket   = aws_s3_bucket.binaries.id
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm = "AES256"
@@ -23,6 +26,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "binaries" {
 }
 
 resource "aws_s3_bucket_public_access_block" "binaries" {
+  provider                = aws.us_east_1
   bucket                  = aws_s3_bucket.binaries.id
   block_public_acls       = true
   block_public_policy     = true
@@ -32,7 +36,8 @@ resource "aws_s3_bucket_public_access_block" "binaries" {
 
 # Allow ECS task role to read/write binaries
 resource "aws_s3_bucket_policy" "binaries" {
-  bucket = aws_s3_bucket.binaries.id
+  provider   = aws.us_east_1
+  bucket     = aws_s3_bucket.binaries.id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [

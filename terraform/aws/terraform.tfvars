@@ -20,5 +20,8 @@ db_name     = "medavida"
 db_username = "medavida"
 # db_password = set via TF_VAR_db_password env var — do not commit
 
+# S3 — bucket already exists in us-east-1 (S3 names are global)
+binary_bucket_name = "medavida-staging-binaries"
+
 # Redis
 redis_node_type = "cache.t4g.micro"

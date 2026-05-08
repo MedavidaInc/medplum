@@ -89,7 +89,7 @@ resource "aws_ecs_task_definition" "server" {
 
   container_definitions = jsonencode([
     {
-      name      = "server"
+      name      = "medplum"
       image     = "${aws_ecr_repository.server.repository_url}:${var.server_image_tag}"
       essential = true
 
@@ -161,7 +161,7 @@ resource "aws_ecs_service" "server" {
 
   load_balancer {
     target_group_arn = aws_lb_target_group.server.arn
-    container_name   = "server"
+    container_name   = "medplum"
     container_port   = 8103
   }
 
