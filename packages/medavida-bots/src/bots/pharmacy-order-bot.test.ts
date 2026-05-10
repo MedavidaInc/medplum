@@ -1,7 +1,8 @@
+import type { MedplumClient } from '@medplum/core';
 import type { MedicationRequest, Patient, Practitioner, Task } from '@medplum/fhirtypes';
 import { MockClient } from '@medplum/mock';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { handler } from './pharmacy-order-bot';
+import { handler, type PharmacyStatusUpdate } from './pharmacy-order-bot';
 
 const SECRETS = {
   PHARMACY_ADAPTER_URL: 'https://adapter.example.com',
@@ -9,18 +10,18 @@ const SECRETS = {
   CLINIC_DEFAULT_NPI: '1234567890',
 };
 
-function botEvent(input: unknown) {
+function botEvent(input: MedicationRequest | PharmacyStatusUpdate) {
   return { bot: { reference: 'Bot/123' }, input, contentType: 'application/json', secrets: SECRETS as any };
 }
 
 describe('pharmacy-order-bot', () => {
-  let medplum: MockClient;
+  let medplum: MedplumClient;
   let patient: Patient;
   let prescriber: Practitioner;
   let rx: MedicationRequest;
 
   beforeEach(async () => {
-    medplum = new MockClient();
+    medplum = new MockClient() as unknown as MedplumClient;
 
     patient = await medplum.createResource<Patient>({
       resourceType: 'Patient',
@@ -66,10 +67,28 @@ describe('pharmacy-order-bot', () => {
         expect.objectContaining({ method: 'POST' })
       );
 
-      const tasks = await medplum.searchResources<Task>('Task');
+      const m = medplum as any;
+      const tasks = (await m.searchResources('Task', 'identifier=https://medavida.com/fhir/pharmacy-order-id|ph_order_001')) as Task[];
       expect(tasks.length).toBe(1);
       expect(tasks[0].identifier?.[0]?.value).toBe('ph_order_001');
       expect(tasks[0].status).toBe('in-progress');
+    });
+
+    test('uses defaultNpi when MedicationRequest has no requester', async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ pharmacyOrderId: 'ph_order_npi' }),
+      } as Response);
+
+      const noPrescriberRx = await medplum.createResource<MedicationRequest>({
+        ...rx,
+        id: undefined,
+        requester: undefined,
+      });
+      await handler(medplum, botEvent(noPrescriberRx));
+
+      const body = JSON.parse((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as string);
+      expect(body.prescriber.npi).toBe(SECRETS.CLINIC_DEFAULT_NPI);
     });
 
     test('skips non-active MedicationRequests', async () => {
@@ -101,17 +120,18 @@ describe('pharmacy-order-bot', () => {
 
     test('dispensed — completes rx, task, and creates MedicationDispense', async () => {
       await handler(medplum, botEvent({
-        fhirMedicationRequestId: rx.id,
+        fhirMedicationRequestId: rx.id ?? '',
         pharmacyOrderId: 'ph_order_001',
         status: 'dispensed',
         dispensedAt: '2026-05-06T10:00:00Z',
         dispensedQuantity: 30,
       }));
 
-      const updatedRx = await medplum.readResource<MedicationRequest>('MedicationRequest', rx.id as string);
+      const m = medplum as any;
+      const updatedRx = (await m.readResource('MedicationRequest', rx.id as string)) as MedicationRequest;
       expect(updatedRx.status).toBe('completed');
 
-      const updatedTask = await medplum.readResource<Task>('Task', task.id as string);
+      const updatedTask = (await m.readResource('Task', task.id as string)) as Task;
       expect(updatedTask.status).toBe('completed');
 
       const dispenses = await medplum.searchResources('MedicationDispense');
@@ -120,18 +140,48 @@ describe('pharmacy-order-bot', () => {
 
     test('error status — marks task failed and creates Communication alert', async () => {
       await handler(medplum, botEvent({
-        fhirMedicationRequestId: rx.id,
+        fhirMedicationRequestId: rx.id ?? '',
         pharmacyOrderId: 'ph_order_001',
         status: 'error',
         errorMessage: 'Drug interaction check failed',
       }));
 
-      const updatedTask = await medplum.readResource<Task>('Task', task.id as string);
+      const m = medplum as any;
+      const updatedTask = (await m.readResource('Task', task.id as string)) as Task;
       expect(updatedTask.status).toBe('failed');
 
-      const comms = await medplum.searchResources('Communication');
-      expect(comms.length).toBe(1);
-      expect(comms[0].payload?.[0]?.contentString).toContain('Drug interaction check failed');
+      const allComms = await medplum.searchResources('Communication') as any[];
+      const alert = allComms.find((c: any) => c.payload?.[0]?.contentString?.includes('Drug interaction check failed'));
+      expect(alert).toBeDefined();
+    });
+
+    test.each([
+      ['received',  'active',     'in-progress'],
+      ['verified',  'active',     'in-progress'],
+      ['filling',   'active',     'in-progress'],
+      ['ready',     'active',     'in-progress'],
+    ] as const)('%s — sets rx to %s and task to %s without creating alerts', async (status, expectedRxStatus, expectedTaskStatus) => {
+      await handler(medplum, botEvent({
+        fhirMedicationRequestId: rx.id ?? '',
+        pharmacyOrderId: 'ph_order_001',
+        status,
+      }));
+
+      const m = medplum as any;
+      const updatedRx = (await m.readResource('MedicationRequest', rx.id as string)) as MedicationRequest;
+      expect(updatedRx.status).toBe(expectedRxStatus);
+
+      const updatedTask = (await m.readResource('Task', task.id as string)) as Task;
+      expect(updatedTask.status).toBe(expectedTaskStatus);
+
+      // Intermediate statuses must not create Communication alerts or MedicationDispenses
+      const comms = await medplum.searchResources('Communication') as any[];
+      const alerts = comms.filter((c: any) =>
+        c.payload?.[0]?.contentString?.includes('ph_order_001')
+      );
+      expect(alerts.length).toBe(0);
+      const dispenses = await medplum.searchResources('MedicationDispense');
+      expect(dispenses.length).toBe(0);
     });
   });
 });

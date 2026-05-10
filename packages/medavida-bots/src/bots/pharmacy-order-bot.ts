@@ -93,6 +93,9 @@ async function handleOutbound(
 ): Promise<void> {
   if (rx.status !== 'active') return;
 
+  if (!rx.subject?.reference) {
+    throw new Error(`MedicationRequest ${rx.id} has no subject reference`);
+  }
   const patient = await medplum.readReference<Patient>(rx.subject as any);
   const prescriber = rx.requester?.reference
     ? await medplum.readReference<Practitioner>(rx.requester as any)
@@ -116,20 +119,23 @@ async function handleOutbound(
 
   const { pharmacyOrderId } = (await response.json()) as { pharmacyOrderId: string };
 
-  // Track the order lifecycle with a Task
-  await medplum.createResource<Task>({
-    resourceType: 'Task',
-    status: 'in-progress',
-    intent: 'order',
-    code: {
-      coding: [{ system: 'https://medavida.com/fhir/CodeSystem/task-type', code: 'pharmacy-order' }],
+  // Track the order lifecycle with a Task — upsert so retries don't create duplicates
+  await medplum.upsertResource<Task>(
+    {
+      resourceType: 'Task',
+      status: 'in-progress',
+      intent: 'order',
+      code: {
+        coding: [{ system: 'https://medavida.com/fhir/CodeSystem/task-type', code: 'pharmacy-order' }],
+      },
+      focus: createReference(rx),
+      for: createReference(patient),
+      authoredOn: new Date().toISOString(),
+      identifier: [{ system: 'https://medavida.com/fhir/pharmacy-order-id', value: pharmacyOrderId }],
+      note: [{ text: `Pharmacy order submitted. Adapter order ID: ${pharmacyOrderId}` }],
     },
-    focus: createReference(rx),
-    for: createReference(patient),
-    authoredOn: new Date().toISOString(),
-    identifier: [{ system: 'https://medavida.com/fhir/pharmacy-order-id', value: pharmacyOrderId }],
-    note: [{ text: `Pharmacy order submitted. Adapter order ID: ${pharmacyOrderId}` }],
-  });
+    { identifier: `https://medavida.com/fhir/pharmacy-order-id|${pharmacyOrderId}` }
+  );
 }
 
 function buildOutboundPayload(
@@ -148,7 +154,16 @@ function buildOutboundPayload(
     prescriber?.identifier?.find((id) => id.system === 'http://hl7.org/fhir/sid/us-npi')?.value ??
     defaultNpi;
 
-  const medCoding = (rx.medicationCodeableConcept?.coding ?? [])[0];
+  const codings = rx.medicationCodeableConcept?.coding ?? [];
+  const rxNormCoding = codings.find((c) => c.system === 'http://www.nlm.nih.gov/research/umls/rxnorm');
+  const ndcCoding = codings.find((c) => c.system === 'http://hl7.org/fhir/sid/ndc');
+
+  const strengthExt = rx.extension?.find(
+    (e) => e.url === 'https://medavida.com/fhir/StructureDefinition/medication-strength'
+  )?.valueString;
+  const doseFormExt = rx.extension?.find(
+    (e) => e.url === 'https://medavida.com/fhir/StructureDefinition/medication-dose-form'
+  )?.valueString;
 
   return {
     externalPatientId: patient.id ?? '',
@@ -172,8 +187,11 @@ function buildOutboundPayload(
       lastName: prescriberName?.family ?? '',
     },
     medication: {
-      name: rx.medicationCodeableConcept?.text ?? medCoding?.display ?? '',
-      rxNormCode: medCoding?.system === 'http://www.nlm.nih.gov/research/umls/rxnorm' ? medCoding.code : undefined,
+      name: rx.medicationCodeableConcept?.text ?? rxNormCoding?.display ?? '',
+      rxNormCode: rxNormCoding?.code,
+      ndc: ndcCoding?.code,
+      strength: strengthExt,
+      doseForm: doseFormExt,
       quantity: rx.dispenseRequest?.quantity?.value ?? 30,
       daysSupply: rx.dispenseRequest?.expectedSupplyDuration?.value ?? 30,
       refills: rx.dispenseRequest?.numberOfRepeatsAllowed ?? 0,
@@ -186,22 +204,24 @@ function buildOutboundPayload(
 // ─── Inbound: pharmacy adapter → FHIR ────────────────────────────────────────
 
 async function handleInbound(medplum: MedplumClient, update: PharmacyStatusUpdate): Promise<void> {
-  const rx = await medplum.readResource<MedicationRequest>('MedicationRequest', update.fhirMedicationRequestId);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const m = medplum as any;
+  const rx = await m.readResource('MedicationRequest', update.fhirMedicationRequestId) as MedicationRequest;
 
   // Update MedicationRequest status
   const newRxStatus = pharmacyStatusToFhir(update.status);
   if (rx.status !== newRxStatus) {
-    await medplum.updateResource<MedicationRequest>({ ...rx, status: newRxStatus });
+    await m.updateResource({ ...rx, status: newRxStatus });
   }
 
   // Update the tracking Task
-  const tasks = await medplum.searchResources<Task>(
+  const tasks = await m.searchResources(
     'Task',
     `identifier=https://medavida.com/fhir/pharmacy-order-id|${update.pharmacyOrderId}`
-  );
+  ) as Task[];
   if (tasks.length > 0) {
     const task = tasks[0];
-    await medplum.updateResource<Task>({
+    await m.updateResource({
       ...task,
       status: pharmacyStatusToTaskStatus(update.status),
       note: [
@@ -209,43 +229,56 @@ async function handleInbound(medplum: MedplumClient, update: PharmacyStatusUpdat
         { text: `Pharmacy status update: ${update.status}${update.errorMessage ? ` — ${update.errorMessage}` : ''}` },
       ],
     });
+  } else {
+    console.warn(
+      `pharmacy-order-bot: no Task found for pharmacy order ${update.pharmacyOrderId} — status ${update.status} not recorded`
+    );
   }
 
-  // Alert clinician if action is needed
+  // Alert clinician if action is needed — upsert so retries don't create duplicate alerts
   if (update.status === 'error' || update.status === 'cancelled') {
-    await medplum.createResource({
-      resourceType: 'Communication',
-      status: 'in-progress',
-      subject: rx.subject,
-      about: [createReference(rx)],
-      category: [
-        {
-          coding: [{ system: 'https://medavida.com/fhir/CodeSystem/communication-category', code: 'pharmacy-alert' }],
-        },
-      ],
-      payload: [
-        {
-          contentString: `Pharmacy order ${update.pharmacyOrderId} ${update.status}${update.errorMessage ? `: ${update.errorMessage}` : ''}. Review required.`,
-        },
-      ],
-      sent: new Date().toISOString(),
-    });
+    const alertIdentifierSystem = 'https://medavida.com/fhir/pharmacy-alert-id';
+    const alertIdentifierValue = `${update.pharmacyOrderId}-${update.status}`;
+    await medplum.upsertResource(
+      {
+        resourceType: 'Communication',
+        status: 'in-progress',
+        subject: rx.subject,
+        about: [createReference(rx)],
+        identifier: [{ system: alertIdentifierSystem, value: alertIdentifierValue }],
+        category: [
+          {
+            coding: [{ system: 'https://medavida.com/fhir/CodeSystem/communication-category', code: 'pharmacy-alert' }],
+          },
+        ],
+        payload: [
+          {
+            contentString: `Pharmacy order ${update.pharmacyOrderId} ${update.status}${update.errorMessage ? `: ${update.errorMessage}` : ''}. Review required.`,
+          },
+        ],
+        sent: new Date().toISOString(),
+      },
+      { identifier: `${alertIdentifierSystem}|${alertIdentifierValue}` }
+    );
   }
 
-  // Create MedicationDispense on dispensing
+  // Create MedicationDispense on dispensing — upsert so retries don't create duplicates
   if (update.status === 'dispensed' && update.dispensedAt) {
-    await medplum.createResource<MedicationDispense>({
-      resourceType: 'MedicationDispense',
-      status: 'completed',
-      medicationCodeableConcept: rx.medicationCodeableConcept ?? { text: 'Unknown' },
-      subject: rx.subject,
-      authorizingPrescription: [createReference(rx)],
-      quantity: update.dispensedQuantity
-        ? { value: update.dispensedQuantity, unit: 'each' }
-        : undefined,
-      whenHandedOver: update.dispensedAt,
-      identifier: [{ system: 'https://medavida.com/fhir/pharmacy-order-id', value: update.pharmacyOrderId }],
-    });
+    await medplum.upsertResource<MedicationDispense>(
+      {
+        resourceType: 'MedicationDispense',
+        status: 'completed',
+        medicationCodeableConcept: rx.medicationCodeableConcept ?? { text: 'Unknown' },
+        subject: rx.subject,
+        authorizingPrescription: [createReference(rx)],
+        quantity: update.dispensedQuantity
+          ? { value: update.dispensedQuantity, unit: 'each' }
+          : undefined,
+        whenHandedOver: update.dispensedAt,
+        identifier: [{ system: 'https://medavida.com/fhir/pharmacy-order-id', value: update.pharmacyOrderId }],
+      },
+      { identifier: `https://medavida.com/fhir/pharmacy-order-id|${update.pharmacyOrderId}` }
+    );
   }
 }
 
@@ -261,6 +294,10 @@ function pharmacyStatusToFhir(status: PharmacyStatusUpdate['status']): Medicatio
     case 'cancelled':
     case 'error':
       return 'cancelled';
+    default: {
+      const _exhaustive: never = status;
+      throw new Error(`Unhandled pharmacy status: ${_exhaustive}`);
+    }
   }
 }
 

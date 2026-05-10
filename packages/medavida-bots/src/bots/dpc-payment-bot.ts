@@ -2,6 +2,7 @@ import { createReference, getExtensionValue } from '@medplum/core';
 import type { BotEvent, MedplumClient } from '@medplum/core';
 import type { Coverage, Patient, PaymentNotice } from '@medplum/fhirtypes';
 import Stripe from 'stripe';
+import { stripeStatusToFhir } from '../lib/stripe-utils';
 
 // Extension URLs for Stripe IDs stored on FHIR resources
 const EXT_STRIPE_CUSTOMER_ID = 'https://medavida.com/fhir/StructureDefinition/stripe-customer-id';
@@ -176,20 +177,6 @@ async function syncStatus(
   }
 }
 
-function stripeStatusToFhir(stripeStatus: Stripe.Subscription.Status): Coverage['status'] {
-  switch (stripeStatus) {
-    case 'active':
-    case 'trialing':
-      return 'active';
-    case 'past_due':
-    case 'unpaid':
-      return 'draft';
-    case 'canceled':
-      return 'cancelled';
-    default:
-      return 'draft';
-  }
-}
 
 async function writePaymentNotice(
   medplum: MedplumClient,
@@ -202,8 +189,9 @@ async function writePaymentNotice(
     resourceType: 'PaymentNotice',
     status: 'active',
     request: createReference(coverage),
+    payment: createReference(coverage) as unknown as PaymentNotice['payment'],
     created: new Date().toISOString(),
-    recipient: createReference(patient),
+    recipient: { reference: `Patient/${patient.id}` } as PaymentNotice['recipient'],
     amount: { value: 0, currency: 'USD' },
     paymentStatus: {
       coding: [{ system: 'http://terminology.hl7.org/CodeSystem/paymentstatus', code: status }],

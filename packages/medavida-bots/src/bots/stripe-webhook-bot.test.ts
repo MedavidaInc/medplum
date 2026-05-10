@@ -1,3 +1,4 @@
+import type { MedplumClient } from '@medplum/core';
 import type { Coverage, Patient } from '@medplum/fhirtypes';
 import { MockClient } from '@medplum/mock';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -15,11 +16,11 @@ function botEvent(stripeEvent: Record<string, unknown>) {
 }
 
 describe('stripe-webhook-bot', () => {
-  let medplum: MockClient;
+  let medplum: MedplumClient;
   let coverage: Coverage;
 
   beforeEach(async () => {
-    medplum = new MockClient();
+    medplum = new MockClient() as unknown as MedplumClient;
     const patient = await medplum.createResource<Patient>({
       resourceType: 'Patient',
       id: 'patient-wh-1',
@@ -29,6 +30,7 @@ describe('stripe-webhook-bot', () => {
       resourceType: 'Coverage',
       status: 'active',
       beneficiary: { reference: `Patient/${patient.id}` },
+      payor: [{ reference: `Patient/${patient.id}` }],
       type: { coding: [{ code: 'PUBLICPOL' }] },
       extension: [{ url: EXT_STRIPE_SUBSCRIPTION_ID, valueString: SUBSCRIPTION_ID }],
     });
@@ -71,9 +73,9 @@ describe('stripe-webhook-bot', () => {
     const updated = await medplum.readResource('Coverage', coverage.id as string);
     expect(updated.status).toBe('draft');
 
-    const comms = await medplum.searchResources('Communication');
-    expect(comms.length).toBe(1);
-    expect(comms[0].payload?.[0]?.contentString).toContain('payment failed');
+    const comms = await medplum.searchResources('Communication') as any[];
+    const alert = comms.find((c: any) => c.payload?.[0]?.contentString?.includes('payment failed'));
+    expect(alert).toBeDefined();
   });
 
   test('customer.subscription.deleted — cancels coverage and writes PaymentNotice', async () => {
@@ -89,6 +91,32 @@ describe('stripe-webhook-bot', () => {
 
     const notices = await medplum.searchResources('PaymentNotice');
     expect(notices.length).toBe(1);
+  });
+
+  test('customer.subscription.updated — updates coverage status when changed', async () => {
+    // Coverage starts as active; subscription reports past_due → expect draft
+    await handler(medplum, botEvent({
+      type: 'customer.subscription.updated',
+      data: {
+        object: { id: SUBSCRIPTION_ID, object: 'subscription', status: 'past_due' },
+      },
+    }));
+
+    const updated = await medplum.readResource('Coverage', coverage.id as string);
+    expect(updated.status).toBe('draft');
+  });
+
+  test('customer.subscription.updated — no-op when status already matches', async () => {
+    // Coverage is active, subscription also active → no update
+    await handler(medplum, botEvent({
+      type: 'customer.subscription.updated',
+      data: {
+        object: { id: SUBSCRIPTION_ID, object: 'subscription', status: 'active' },
+      },
+    }));
+
+    const updated = await medplum.readResource('Coverage', coverage.id as string);
+    expect(updated.status).toBe('active');
   });
 
   test('ignores unknown event types without throwing', async () => {

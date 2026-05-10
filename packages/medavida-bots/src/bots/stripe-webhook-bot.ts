@@ -1,19 +1,14 @@
 import { getExtensionValue } from '@medplum/core';
 import type { BotEvent, MedplumClient } from '@medplum/core';
-import type { Coverage, Patient } from '@medplum/fhirtypes';
+import type { Coverage, Patient, PaymentNotice } from '@medplum/fhirtypes';
 import Stripe from 'stripe';
+import { stripeStatusToFhir } from '../lib/stripe-utils';
 
 const EXT_STRIPE_SUBSCRIPTION_ID = 'https://medavida.com/fhir/StructureDefinition/stripe-subscription-id';
 
-interface BotSecrets {
-  STRIPE_SECRET_KEY: string;
-  STRIPE_WEBHOOK_SECRET: string;
-}
-
 // Bot receives the raw Stripe event object (POSTed by Stripe webhook → Bot/$execute)
 export async function handler(medplum: MedplumClient, event: BotEvent<Record<string, unknown>>): Promise<void> {
-  const secrets = event.secrets as unknown as BotSecrets;
-  const stripeEvent = event.input as Stripe.Event;
+  const stripeEvent = event.input as unknown as Stripe.Event;
 
   if (!stripeEvent?.type) {
     throw new Error('Invalid Stripe event: missing type');
@@ -27,18 +22,23 @@ export async function handler(medplum: MedplumClient, event: BotEvent<Record<str
       await handleInvoicePaymentFailed(medplum, stripeEvent.data.object as Stripe.Invoice);
       break;
     case 'customer.subscription.deleted':
-      await handleSubscriptionDeleted(medplum, stripeEvent.data.object as Stripe.Subscription, secrets);
+      await handleSubscriptionDeleted(medplum, stripeEvent.data.object as Stripe.Subscription);
       break;
     case 'customer.subscription.updated':
-      await handleSubscriptionUpdated(medplum, stripeEvent.data.object as Stripe.Subscription, secrets);
+      await handleSubscriptionUpdated(medplum, stripeEvent.data.object as Stripe.Subscription);
       break;
     default:
       console.log(`Unhandled Stripe event type: ${stripeEvent.type}`);
   }
 }
 
+function extractSubscriptionId(invoice: Stripe.Invoice): string | undefined {
+  const sub = (invoice as unknown as Record<string, unknown>)['subscription'];
+  return typeof sub === 'string' ? sub : (sub as Stripe.Subscription | null)?.id;
+}
+
 async function handleInvoicePaid(medplum: MedplumClient, invoice: Stripe.Invoice): Promise<void> {
-  const subscriptionId = typeof invoice.subscription === 'string' ? invoice.subscription : invoice.subscription?.id;
+  const subscriptionId = extractSubscriptionId(invoice);
   if (!subscriptionId) return;
 
   const coverage = await findCoverageBySubscription(medplum, subscriptionId);
@@ -52,10 +52,12 @@ async function handleInvoicePaid(medplum: MedplumClient, invoice: Stripe.Invoice
     await medplum.updateResource<Coverage>({ ...coverage, status: 'active' });
   }
 
-  await medplum.createResource({
+  await medplum.createResource<PaymentNotice>({
     resourceType: 'PaymentNotice',
     status: 'active',
     request: { reference: `Coverage/${coverage.id}` },
+    payment: { reference: `Coverage/${coverage.id}` },
+    recipient: coverage.beneficiary as unknown as PaymentNotice['recipient'],
     created: new Date().toISOString(),
     amount: { value: (invoice.amount_paid ?? 0) / 100, currency: (invoice.currency?.toUpperCase() ?? 'USD') as 'USD' },
     paymentStatus: {
@@ -66,7 +68,7 @@ async function handleInvoicePaid(medplum: MedplumClient, invoice: Stripe.Invoice
 }
 
 async function handleInvoicePaymentFailed(medplum: MedplumClient, invoice: Stripe.Invoice): Promise<void> {
-  const subscriptionId = typeof invoice.subscription === 'string' ? invoice.subscription : invoice.subscription?.id;
+  const subscriptionId = extractSubscriptionId(invoice);
   if (!subscriptionId) return;
 
   const coverage = await findCoverageBySubscription(medplum, subscriptionId);
@@ -75,6 +77,9 @@ async function handleInvoicePaymentFailed(medplum: MedplumClient, invoice: Strip
   // Move to draft (past_due) so clinical staff can see it
   await medplum.updateResource<Coverage>({ ...coverage, status: 'draft' });
 
+  if (!coverage.beneficiary?.reference) {
+    throw new Error(`Coverage ${coverage.id} has no beneficiary reference`);
+  }
   const patient = await medplum.readReference<Patient>(coverage.beneficiary as any);
 
   // Create a Communication to alert the member
@@ -99,18 +104,19 @@ async function handleInvoicePaymentFailed(medplum: MedplumClient, invoice: Strip
 
 async function handleSubscriptionDeleted(
   medplum: MedplumClient,
-  subscription: Stripe.Subscription,
-  _secrets: BotSecrets
+  subscription: Stripe.Subscription
 ): Promise<void> {
   const coverage = await findCoverageBySubscription(medplum, subscription.id);
   if (!coverage) return;
 
   await medplum.updateResource<Coverage>({ ...coverage, status: 'cancelled' });
 
-  await medplum.createResource({
+  await medplum.createResource<PaymentNotice>({
     resourceType: 'PaymentNotice',
     status: 'active',
     request: { reference: `Coverage/${coverage.id}` },
+    payment: { reference: `Coverage/${coverage.id}` },
+    recipient: coverage.beneficiary as unknown as PaymentNotice['recipient'],
     created: new Date().toISOString(),
     amount: { value: 0, currency: 'USD' },
     paymentStatus: {
@@ -122,8 +128,7 @@ async function handleSubscriptionDeleted(
 
 async function handleSubscriptionUpdated(
   medplum: MedplumClient,
-  subscription: Stripe.Subscription,
-  _secrets: BotSecrets
+  subscription: Stripe.Subscription
 ): Promise<void> {
   const coverage = await findCoverageBySubscription(medplum, subscription.id);
   if (!coverage) return;
@@ -138,25 +143,10 @@ async function findCoverageBySubscription(
   medplum: MedplumClient,
   subscriptionId: string
 ): Promise<Coverage | undefined> {
-  // Search by the extension value — requires a SearchParameter registered in Medplum
-  // for Coverage.extension:stripe-subscription-id. Falls back to a bundle search.
-  const results = await medplum.searchResources<Coverage>('Coverage');
-  return results.find(
-    (c) => getExtensionValue(c, EXT_STRIPE_SUBSCRIPTION_ID) === subscriptionId
-  );
+  // On a real Medplum server this requires a SearchParameter registered for
+  // Coverage.extension:stripe-subscription-id. In tests we fall back to filtering all.
+  const m = medplum as any;
+  const results = (await m.searchResources('Coverage')) as Coverage[];
+  return results.find(c => getExtensionValue(c, EXT_STRIPE_SUBSCRIPTION_ID) === subscriptionId);
 }
 
-function stripeStatusToFhir(stripeStatus: Stripe.Subscription.Status): Coverage['status'] {
-  switch (stripeStatus) {
-    case 'active':
-    case 'trialing':
-      return 'active';
-    case 'past_due':
-    case 'unpaid':
-      return 'draft';
-    case 'canceled':
-      return 'cancelled';
-    default:
-      return 'draft';
-  }
-}
