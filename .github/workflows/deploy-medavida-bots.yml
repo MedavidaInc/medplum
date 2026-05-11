@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      MEDPLUM_BASE_URL: https://medplum.staging.demoatable.com
+      MEDPLUM_BASE_URL: https://medplum.staging.medavida.app
       MEDPLUM_PROJECT_ID: d75b420c-527e-43c7-81f6-e25ca75360aa
 
     steps:
