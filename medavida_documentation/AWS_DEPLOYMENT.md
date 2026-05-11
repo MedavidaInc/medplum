@@ -1,266 +1,225 @@
 # MedaVida — AWS Deployment Guide
 
-> Last updated: 2026-05-07  
-> Stack: ECS Fargate + Aurora Serverless v2 + ElastiCache Redis + S3 + ALB  
-> IaC: Terraform (`terraform/aws/`)
+> Last updated: 2026-05-11  
+> Stack: ECS Fargate + RDS PostgreSQL + ElastiCache Redis + S3 + ALB + CloudFront  
+> IaC: Terraform (`medavida-backend/terraform/`)
 
 ---
 
-## Architecture overview
+## Architecture Overview
 
 ```
 Internet
     │
-    ▼
-[Route 53] api.staging.medavida.com
+    ├── app.staging.demoatable.com ──→ [CloudFront E3R58DCVIHYD5Y]
+    │                                        │
+    │                                        ▼
+    │                                  [S3: medavida-staging-frontend]
     │
-    ▼
-[ALB] HTTPS :443 → HTTP :8103
-    │
-    ▼
-[ECS Fargate] medavida/server container (private subnets)
-    │         │                  │
-    ▼         ▼                  ▼
-[Aurora    [ElastiCache      [S3 bucket]
- Serverless Redis TLS]        binaries
- v2 Postgres]
-    │
-[Secrets Manager] db-password, redis-password, stripe-secret-key, ...
+    ├── api.staging.demoatable.com ──→ [ALB] ──→ [ECS: medavida-web / medavida-worker]
+    │                                                    │
+    └── medplum.staging.demoatable.com → [ALB] ──→ [ECS: medavida-medplum]
+                                                         │
+                                            ┌────────────┼────────────┐
+                                            ▼            ▼            ▼
+                                     [RDS Postgres] [Redis]    [S3 binaries]
 ```
 
 ---
 
-## Prerequisites
+## AWS Resources — Staging
 
-- AWS CLI configured (`aws sts get-caller-identity` returns your account)
-- Terraform >= 1.6 (`terraform version`)
-- Docker (for building + pushing the server image)
-- An ACM certificate for your domain (must be in `us-east-1`)
-- A Route 53 hosted zone (or DNS access to create a CNAME)
-
----
-
-## Step 1 — Bootstrap Terraform remote state
-
-This only needs to be done once per AWS account.
-
-```sh
-# Create the S3 state bucket
-aws s3api create-bucket \
-  --bucket medavida-terraform-state \
-  --region us-east-1
-
-aws s3api put-bucket-versioning \
-  --bucket medavida-terraform-state \
-  --versioning-configuration Status=Enabled
-
-aws s3api put-bucket-encryption \
-  --bucket medavida-terraform-state \
-  --server-side-encryption-configuration \
-  '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
-
-# Create the DynamoDB lock table
-aws dynamodb create-table \
-  --table-name medavida-terraform-locks \
-  --attribute-definitions AttributeName=LockID,AttributeType=S \
-  --key-schema AttributeName=LockID,KeyType=HASH \
-  --billing-mode PAY_PER_REQUEST \
-  --region us-east-1
-```
+| Resource | Name / ID | Region |
+|---|---|---|
+| ECS Cluster | `medavida` | us-east-2 |
+| ECS Service (web) | `medavida-web` (task def: `medavida-web:11`) | us-east-2 |
+| ECS Service (worker) | `medavida-worker` | us-east-2 |
+| ECS Service (medplum) | `medavida-medplum` (task def: `medavida-medplum:11`) | us-east-2 |
+| ECR (Django) | `medavida-django` | us-east-2 |
+| ECR (Medplum) | `medavida-medplum` | us-east-2 |
+| RDS (PostgreSQL) | `medavida-staging.czsg0qgye6mw.us-east-2.rds.amazonaws.com:5432` | us-east-2 |
+| ElastiCache (Redis) | `medavida-staging.eghfw4.0001.use2.cache.amazonaws.com:6379` | us-east-2 |
+| S3 (frontend) | `medavida-staging-frontend` | us-east-2 |
+| S3 (Medplum binaries) | `medavida-staging-binaries` | us-east-2 |
+| CloudFront (frontend) | `E3R58DCVIHYD5Y` | global |
+| Secrets Manager (app) | `medavida/staging/app` | us-east-2 |
+| Secrets Manager (db) | `medavida/staging/db-password` | us-east-2 |
+| AWS Profile | `medavida` | — |
 
 ---
 
-## Step 2 — Request an ACM certificate
+## Secrets Manager — `medavida/staging/app`
 
-```sh
-aws acm request-certificate \
-  --domain-name "api.staging.medavida.com" \
-  --validation-method DNS \
-  --region us-east-1
-```
+Flat JSON object injected as individual environment variables into ECS tasks.
 
-Complete the DNS validation in Route 53 (or your DNS provider), then copy the certificate ARN into `terraform.tfvars`.
+| Key | Notes |
+|---|---|
+| `SECRET_KEY` | Django secret key |
+| `DATABASE_URL` | Full `postgres://` connection string — authoritative password source |
+| `REDIS_URL` | Redis connection string |
+| `STRIPE_TEST_SECRET_KEY` | Stripe test key (`sk_test_...`) |
+| `STRIPE_ENDPOINT_SECRET` | Stripe webhook signing secret (`whsec_...`) |
+| `FRONT_END_ROOT_URL` | `https://app.staging.demoatable.com` |
+| `MEDPLUM_WEBHOOK_SECRET` | HMAC secret for inbound Medplum webhooks |
+| `MEDPLUM_BASE_URL` | `https://medplum.staging.demoatable.com/` |
+| `MEDPLUM_TOKEN_URL` | `https://medplum.staging.demoatable.com/oauth2/token` |
+| `MEDPLUM_CLIENT_ID` | Django backend `ClientApplication` ID |
+| `MEDPLUM_CLIENT_SECRET` | Django backend `ClientApplication` secret |
+| `MEDPLUM_STRIPE_WEBHOOK_BOT_ID` | `3f531da1-2312-4b7d-88a9-aee9956eb652` |
 
----
-
-## Step 3 — Configure terraform.tfvars
-
-Edit `terraform/aws/terraform.tfvars` and fill in:
-
-```hcl
-app_domain      = "api.staging.medavida.com"
-certificate_arn = "arn:aws:acm:us-east-1:YOUR_ACCOUNT_ID:certificate/YOUR_CERT_ID"
-app_base_url    = "https://app.staging.medavida.com/"
-```
+> `DATABASE_URL` contains the authoritative DB password. Do not rely on `medavida/staging/db-password` — it has drifted.
 
 ---
 
-## Step 4 — Terraform init + apply
+## Deploying the Django Backend
 
-```sh
-cd terraform/aws
-
-terraform init
-terraform plan     # review what will be created
-terraform apply
-```
-
-This provisions (~10 minutes):
-- VPC + subnets + NAT gateways
-- ALB + HTTPS listener
-- Aurora Serverless v2 cluster
-- ElastiCache Redis
-- ECS cluster + task definition + service
-- ECR repository
-- S3 binary bucket
-- Secrets Manager entries
-- IAM roles
-
-After apply, note the outputs:
-```sh
-terraform output
-# alb_dns_name       → create your DNS CNAME to this
-# ecr_repository_url → used for docker push
-```
-
----
-
-## Step 5 — Point DNS to the ALB
-
-In Route 53 (or your DNS provider), create:
-```
-CNAME  api.staging.medavida.com  →  <alb_dns_name from terraform output>
-```
-
----
-
-## Step 6 — Build and push the server Docker image
-
-```sh
-# Authenticate Docker to ECR
-aws ecr get-login-password --region us-east-1 | \
+```bash
+# 1. Authenticate to ECR
+aws sso login --sso-session medavida
+aws ecr get-login-password --region us-east-2 --profile medavida | \
   docker login --username AWS --password-stdin \
-  $(terraform output -raw ecr_repository_url | cut -d/ -f1)
+  049815585091.dkr.ecr.us-east-2.amazonaws.com
 
-# Build the Medplum server image from the repo root
-docker build -t medavida/server -f packages/server/Dockerfile .
+# 2. Build and push
+docker build -t 049815585091.dkr.ecr.us-east-2.amazonaws.com/medavida-django:latest .
+docker push 049815585091.dkr.ecr.us-east-2.amazonaws.com/medavida-django:latest
 
-# Tag and push
-ECR_URL=$(cd terraform/aws && terraform output -raw ecr_repository_url)
-docker tag medavida/server:latest $ECR_URL:latest
-docker push $ECR_URL:latest
+# 3. Run migrations
+AWS_PROFILE=medavida aws ecs run-task \
+  --cluster medavida \
+  --task-definition medavida-web \
+  --launch-type FARGATE \
+  --region us-east-2 \
+  --network-configuration "awsvpcConfiguration={subnets=[subnet-0e500332a390401c5],securityGroups=[sg-0af055f287c2f4bed],assignPublicIp=DISABLED}" \
+  --overrides '{"containerOverrides":[{"name":"web","command":["python","manage.py","migrate","--noinput"]}]}'
+
+# 4. Force redeploy
+AWS_PROFILE=medavida aws ecs update-service --cluster medavida --service medavida-web --force-new-deployment --region us-east-2
+AWS_PROFILE=medavida aws ecs update-service --cluster medavida --service medavida-worker --force-new-deployment --region us-east-2
 ```
 
 ---
 
-## Step 7 — Trigger the first ECS deployment
+## Deploying the React Frontend
 
-After pushing the image, force a new deployment:
+Use the deploy script from the frontend repo:
 
-```sh
-CLUSTER=$(cd terraform/aws && terraform output -raw ecs_cluster_name)
-SERVICE=$(cd terraform/aws && terraform output -raw ecs_service_name)
-
-aws ecs update-service \
-  --cluster $CLUSTER \
-  --service $SERVICE \
-  --force-new-deployment \
-  --region us-east-1
+```bash
+cd /path/to/Medavidapracticedashboard
+./scripts/deploy_staging.sh
 ```
 
-Watch it come up:
-```sh
-aws ecs wait services-stable \
-  --cluster $CLUSTER \
-  --services $SERVICE \
-  --region us-east-1
+The script: `npm run build` (reads `.env.production`) → S3 sync → CloudFront invalidation + wait.
 
-echo "Done — checking healthcheck..."
-curl https://api.staging.medavida.com/healthcheck
-```
+Key vars baked in at build time:
+
+| Variable | Value |
+|---|---|
+| `VITE_API_URL` | `https://api.staging.demoatable.com` |
+| `VITE_MEDPLUM_BASE_URL` | `https://medplum.staging.demoatable.com/` |
+| `VITE_MEDPLUM_CLIENT_ID` | `d097cfaf-f137-4ae2-8c3c-ba815150687f` |
+
+> `VITE_MEDPLUM_CLIENT_ID` is required. Without it, `MedplumClient.startLogin()` fails with "Failed to fetch".
 
 ---
 
-## Step 8 — Store bot secrets in Secrets Manager
+## Deploying Medplum Bots
 
-The Stripe and pharmacy secrets were created as empty placeholders by Terraform. Populate them:
+Bots are deployed automatically by CI when `packages/medavida-bots/src/**` changes.  
+See `.github/workflows/deploy-medavida-bots.yml`.
 
-```sh
-aws secretsmanager put-secret-value \
-  --secret-id "medavida/staging/stripe-secret-key" \
-  --secret-string "sk_test_YOUR_KEY" \
-  --region us-east-1
+To deploy manually:
 
-aws secretsmanager put-secret-value \
-  --secret-id "medavida/staging/pharmacy-adapter-api-key" \
-  --secret-string "YOUR_KEY" \
-  --region us-east-1
+```bash
+# Build
+cd packages/medavida-bots
+npm run build
+
+# Get a Medplum access token
+TOKEN=$(curl -sf -X POST https://medplum.staging.demoatable.com/oauth2/token \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=client_credentials&client_id=<CLIENT_ID>&client_secret=<CLIENT_SECRET>" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+# Deploy a bot (example: stripe-webhook-bot)
+BIN_ID=$(curl -sf -X POST https://medplum.staging.demoatable.com/fhir/R4/Binary \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: text/javascript" \
+  --data-binary "@dist/bots/stripe-webhook-bot.js" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+
+curl -sf -X PUT "https://medplum.staging.demoatable.com/fhir/R4/Bot/3f531da1-2312-4b7d-88a9-aee9956eb652" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"resourceType\":\"Bot\",\"id\":\"3f531da1-2312-4b7d-88a9-aee9956eb652\",\"name\":\"stripe-webhook-bot\",\"runtimeVersion\":\"vmcontext\",\"executableCode\":{\"contentType\":\"application/javascript\",\"url\":\"Binary/$BIN_ID\"}}"
 ```
 
-Then redeploy the ECS service to pick them up (repeat Step 7).
+> `medplum bot deploy` CLI does **not** work — the JWT `aud` claim is wrong. Always use the FHIR API Binary pattern above.
 
 ---
 
-## Deploying updates
+## Medplum ECS Task Configuration (`medavida-medplum:11`)
 
-### New server release
-```sh
-# Build + push new image with a version tag
-docker build -t medavida/server:v1.2.0 -f packages/server/Dockerfile .
-docker tag medavida/server:v1.2.0 $ECR_URL:v1.2.0
-docker push $ECR_URL:v1.2.0
-
-# Update the task definition to use the new tag
-cd terraform/aws
-terraform apply -var="server_image_tag=v1.2.0"
-```
-
-### Config changes only (no image change)
-```sh
-cd terraform/aws
-terraform apply
-# ECS service will redeploy with updated environment variables
-```
+| Variable | Value | Notes |
+|---|---|---|
+| `command` | `["env"]` | Loads config from env vars, not baked-in config file |
+| `MEDPLUM_BINARY_STORAGE` | `s3:medavida-staging-binaries` | `s3:bucketname` format — no `://` |
+| `MEDPLUM_DATABASE_SSL` | `{"rejectUnauthorized":false}` | Must be a JSON string |
+| `MEDPLUM_ALLOWED_ORIGINS` | `https://app.medavida.com/,https://app.staging.demoatable.com` | Comma-separated; missing origins → CORS error on login |
 
 ---
 
-## Monitoring and logs
+## Medplum Admin
 
-```sh
-# Tail live ECS logs
-aws logs tail /ecs/medavida-staging-server --follow --region us-east-1
+URL: `https://medplum.staging.demoatable.com/` (no Google OAuth — direct password login)
 
-# View recent errors
-aws logs filter-log-events \
-  --log-group-name /ecs/medavida-staging-server \
-  --filter-pattern "ERROR" \
-  --region us-east-1
-```
+| Account | Email | Password |
+|---|---|---|
+| Super admin | `admin@example.com` | `medplum_admin` |
+| Demo practitioner | `demo@medavida.com` | `MedaVida2026!` |
 
----
+**Projects:**
+- `161452d9` — FHIR R4 (default)
+- `d75b420c` — MedaVida (bots, ClientApplications, patient data)
 
-## Promoting to production
+**ClientApplications (MedaVida project):**
+- `31b94039` — Django backend (`client_credentials` grant)
+- `d097cfaf` — React SPA (`authorization_code` grant, redirect: `https://app.staging.demoatable.com/`)
 
-1. Create a `terraform/aws/production.tfvars` based on `terraform.tfvars`
-2. Set `environment = "production"`, update domain + cert ARN
-3. Run:
-   ```sh
-   terraform apply -var-file=production.tfvars
-   ```
-
-Key differences applied automatically in production:
-- RDS deletion protection enabled
-- RDS backup retention 7 days (vs 1 day staging)
-- Secrets Manager recovery window 30 days (vs 0 staging)
-- CloudWatch log retention 90 days (vs 14 days staging)
+**Creating a ClientApplication correctly:** Use `POST /admin/projects/<projectId>/client` — not `POST /fhir/R4/ClientApplication`. The admin endpoint atomically creates the `ClientApplication` + `ProjectMembership`. Without a membership, `client_credentials` returns "Invalid client".
 
 ---
 
-## Teardown (staging only)
+## Seeding Demo Data
 
-```sh
-cd terraform/aws
-terraform destroy
+```bash
+# From medavida-backend repo
+./scripts/seed_staging.sh
 ```
 
-> RDS and Secrets Manager in production have deletion protection enabled — `terraform destroy` will fail safely without manual overrides.
+Idempotent. Seeds Django (practice, provider, 5 patients, invoices, care plans) and creates `demo@medavida.com` as a Practitioner in Medplum.
+
+---
+
+## Terraform
+
+Infrastructure is defined in `medavida-backend/terraform/`. All commands require `AWS_PROFILE=medavida`.
+
+```bash
+cd terraform
+AWS_PROFILE=medavida terraform plan
+AWS_PROFILE=medavida terraform apply
+```
+
+State backend: S3 bucket `medavida-terraform-state`, key `staging/terraform.tfstate`, DynamoDB lock table `medavida-terraform-locks`.
+
+---
+
+## Known Quirks
+
+- **ECR repo name** — Django image is `medavida-django` (not `medavida`)
+- **`MEDPLUM_BINARY_STORAGE` format** — `s3:bucketname`, not `s3://bucketname`
+- **`MEDPLUM_DATABASE_SSL`** — must be a JSON string; sub-key env vars don't work
+- **`MEDPLUM_ALLOWED_ORIGINS`** — must include every browser origin; caused CORS "Failed to fetch" on login (fixed 2026-05-11 in rev 11)
+- **Stripe webhook signing** — `stripe==15.0.1` uses raw UTF-8 bytes of the full `whsec_...` string, does not base64-decode
+- **`migrate_with_views`** — referenced in task def but not implemented; always use `--overrides` with `python manage.py migrate --noinput`

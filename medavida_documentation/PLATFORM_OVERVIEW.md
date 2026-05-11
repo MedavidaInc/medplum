@@ -1,213 +1,181 @@
 # MedaVida Platform — Documentation
 
-> Last updated: 2026-05-06
+> Last updated: 2026-05-11
 
 ---
 
-## What we are building
+## What We Are Building
 
-A **multi-tenant MSO (Management Services Organization)** platform that services many clinics or groups of clinics, built on a **forked Medplum** FHIR backend with a **custom frontend**.
+A **DPC (Direct Primary Care)** practice management platform built on a **forked Medplum** self-hosted FHIR server with a custom Django backend and React frontend.
 
-- Medplum is the headless FHIR backend (dockerized, self-hosted)
-- We fork Medplum to add custom bots, extensions, and resource profiles
-- We build our own frontend (React / Vite) using `@medplum/react` and `@medplum/core` SDKs
-- Primary model: **DPC (Direct Primary Care)** — membership-based, not fee-for-service
+- **Medplum** — headless FHIR server (self-hosted on ECS Fargate, v5.1.10)
+- **Django** — orchestration engine: subscriptions, billing, supplier submission, inventory
+- **React SPA** — practice dashboard (`MedavidaInc/Medavidapracticedashboard`)
+- **Medplum Bots** — automation layer in this repo (`packages/medavida-bots/`)
 
-**Upstream Medplum repo:** https://github.com/medplum/medplum  
 **Our fork:** https://github.com/MedavidaInc/medplum  
-**Medplum multi-tenant MSO docs:** https://www.medplum.com/blog/multi-tenant-mso
+**Django backend:** https://github.com/MedavidaInc/medavida-backend  
+**React frontend:** https://github.com/MedavidaInc/Medavidapracticedashboard
 
 ---
 
-## Architecture decisions
-
-### Multi-tenancy model
-- One top-level Medplum `Project` = the MSO
-- One child `Project` per clinic (or clinic group) = **bridge model** (shared DB, isolated per-project)
-- Extensible: enterprise clinics can be carved out to silo deployments later
-
-### Stack
-| Layer | Choice |
-|---|---|
-| Backend | Forked Medplum (Docker / Kubernetes) |
-| Database | PostgreSQL (RDS or self-hosted) |
-| Cache / queues | Redis |
-| Object storage | S3-compatible |
-| Frontend | React / Vite using `@medplum/react` SDK |
-| API gateway | Nginx / Caddy / AWS ALB |
-| Bot runtime | `awslambda` (or `vmcontext` for self-hosted) |
-
-### Forking strategy
-- Fork `medplum/medplum` on GitHub → our fork lives at `MedavidaInc/medplum`
-- Keep fork rebased on upstream `main` **monthly** — do NOT diverge core FHIR engine or auth
-- Add custom code only in isolated locations:
-  - `packages/medavida-bots/` — all custom bot logic
-  - `packages/medavida-app/` — custom frontend
-- This preserves the ability to pull upstream security patches cleanly
-
-### Extension URL namespace
-All custom FHIR extensions use: `https://medavida.com/fhir/StructureDefinition/`  
-All custom CodeSystems use: `https://medavida.com/fhir/CodeSystem/`
-
----
-
-## Repository structure
+## System Architecture
 
 ```
-medplum/                          ← fork root
+React Frontend (app.staging.demoatable.com)
+    │ primary API          │ secondary API
+    ▼                      ▼
+Medplum FHIR Server    Django REST API
+(medplum.staging.*)    (api.staging.*)
+    │ webhooks                │ Celery tasks
+    │                         │
+    ▼                         ▼
+Medplum Bots ◄──────── Stripe Webhooks
+(this repo)            (forwarded by Django)
+```
+
+**Key principle:** The React frontend uses Medplum as its primary data API. Django is called only for payment operations and subscription management. Everything clinical — patients, prescriptions, invoices, inventory, deliveries — is written back from Django to Medplum so the frontend always has a complete picture.
+
+---
+
+## Staging Environment
+
+| Service | URL |
+|---|---|
+| React Frontend | `https://app.staging.demoatable.com` |
+| Django API | `https://api.staging.demoatable.com` |
+| Medplum FHIR | `https://medplum.staging.demoatable.com` |
+
+**Demo credentials:** `demo@medavida.com` / `MedaVida2026!`
+
+See [AWS_DEPLOYMENT.md](AWS_DEPLOYMENT.md) for full infrastructure details.
+
+---
+
+## Repository Structure
+
+```
+medplum/                              ← MedaVida fork of medplum/medplum
 ├── packages/
-│   ├── medavida-bots/            ← custom bots (DO NOT mix with upstream packages)
-│   │   └── src/
-│   │       ├── bots/             ← bot handlers + tests
-│   │       └── models/           ← FHIR types, builders, profiles
-│   ├── medavida-app/             ← custom frontend (DO NOT mix with upstream packages)
-│   │   └── src/
-│   │       └── pages/
-│   │           ├── admin/        ← MSO admin dashboard
-│   │           ├── clinic/       ← clinic EMR portal
-│   │           └── patient/      ← patient portal
-│   └── [upstream packages...]    ← do not modify
-├── examples/                     ← upstream examples (do not modify)
-├── medavida_documentation/       ← this directory
+│   ├── medavida-bots/                ← ALL custom bot code lives here
+│   │   ├── src/
+│   │   │   ├── bots/                 ← bot handlers
+│   │   │   └── models/               ← FHIR builders, types
+│   │   ├── medplum.config.json       ← bot IDs (staging)
+│   │   └── package.json
+│   └── [upstream packages...]        ← do not modify
+├── medavida_documentation/           ← this directory
+├── .github/workflows/
+│   ├── deploy-medavida-bots.yml      ← MedaVida bot CI/CD (auto-deploy on src change)
+│   └── [upstream workflows...]
 └── ...
 ```
 
 ---
 
-## Custom packages
+## Custom Bots (`packages/medavida-bots/`)
 
-### `packages/medavida-bots/` (`@medavida/bots`)
+Bot runtime: **`vmcontext`** (self-hosted Medplum — not `awslambda`).
 
-Mirrors the `medplum-demo-bots` pattern: TypeScript compiled with `tsc`, bundled with `esbuild` (CJS output for Lambda/vmcontext), tested with `vitest` + `@medplum/mock`.
-
-**Bots:**
-
-| File | Trigger | Purpose |
+| Bot | Trigger | Purpose |
 |---|---|---|
-| `dpc-payment-bot.ts` | `Coverage` subscription (`type=PUBLICPOL`) | DPC membership billing via Stripe — enroll, cancel, update plan, sync status |
-| `stripe-webhook-bot.ts` | HTTP POST from Stripe → `Bot/$execute` | Inbound Stripe events → FHIR Coverage + PaymentNotice + Communication |
-| `pharmacy-order-bot.ts` | `MedicationRequest?status=active` + inbound webhook | Outbound Rx → pharmacy adapter; inbound status → Task/Dispense/Communication |
-| `nonrx-interaction-checker-bot.ts` | `MedicationRequest` creation | Checks patient's non-Rx statements for interactions, creates urgent Task for clinician |
+| `dpc-payment-bot` | `Coverage` subscription (`type=PUBLICPOL`) | DPC membership billing — enroll, cancel, plan change, sync status |
+| `stripe-webhook-bot` | `Bot/$execute` POST from Django | Stripe billing events → FHIR Coverage + PaymentNotice + Communication |
+| `pharmacy-order-bot` | `MedicationRequest?status=active` + inbound webhook | Outbound Rx → pharmacy adapter; inbound status → Task/Dispense/Communication |
 
-**Models:**
+### Deployed bot IDs (staging — MedaVida project `d75b420c`)
 
-| File | Purpose |
+| Bot | ID |
 |---|---|
-| `models/non-rx-medication.types.ts` | TypeScript types + extension URL constants for non-Rx recommendations |
-| `models/non-rx-medication.builder.ts` | FHIR builder, parser, and Medplum client helpers |
+| `stripe-webhook-bot` | `3f531da1-2312-4b7d-88a9-aee9956eb652` |
+| `dpc-payment-bot` | `f65f3639-8518-4842-bf15-aefaf365687f` |
+| `pharmacy-order-bot` | `a3a83673-fab7-47c8-9a35-8248ea03b7e8` |
 
-### `packages/medavida-app/` (`@medavida/app`)
+IDs are also stored in `packages/medavida-bots/medplum.config.json`.
 
-Mirrors the `medplum-provider` + `medplum-mso-demo` pattern: Vite + React Router v7 + Mantine v8 + `@medplum/react` AppShell.
+### Bot secrets (set on each Bot resource in Medplum admin UI)
 
-Three route sections:
-
-| Section | Routes | Purpose |
+| Secret | Bot | Notes |
 |---|---|---|
-| MSO Admin | `/admin`, `/admin/clinics`, `/admin/clinics/:id` | Multi-clinic dashboard, org management |
-| Clinic EMR | `/clinic/patients`, `/clinic/tasks`, `/clinic/messages`, `/clinic/pharmacy`, `/clinic/patients/:id/non-rx` | Provider-facing EHR portal |
-| Patient Portal | `/portal`, `/portal/membership` | Member self-service, DPC plan status |
-
----
-
-## Required secrets
-
-| Secret key | Used by | Notes |
-|---|---|---|
-| `STRIPE_SECRET_KEY` | dpc-payment-bot | Stripe live/test key |
-| `STRIPE_PRICE_INDIVIDUAL` | dpc-payment-bot | Stripe Price ID for individual plan |
-| `STRIPE_PRICE_FAMILY` | dpc-payment-bot | Stripe Price ID for family plan |
-| `STRIPE_PRICE_SENIOR` | dpc-payment-bot | Stripe Price ID for senior plan |
+| `STRIPE_SECRET_KEY` | dpc-payment-bot, stripe-webhook-bot | Stripe API key |
+| `STRIPE_PRICE_INDIVIDUAL` | dpc-payment-bot | Stripe Price ID |
+| `STRIPE_PRICE_FAMILY` | dpc-payment-bot | Stripe Price ID |
+| `STRIPE_PRICE_SENIOR` | dpc-payment-bot | Stripe Price ID |
 | `STRIPE_WEBHOOK_SECRET` | stripe-webhook-bot | Stripe webhook signing secret |
-| `PHARMACY_ADAPTER_URL` | pharmacy-order-bot | Your adapter base URL |
+| `PHARMACY_ADAPTER_URL` | pharmacy-order-bot | Adapter base URL |
 | `PHARMACY_ADAPTER_API_KEY` | pharmacy-order-bot | Adapter auth key |
-| `CLINIC_DEFAULT_NPI` | pharmacy-order-bot | Fallback NPI when prescriber NPI is absent |
-
-Secrets are set via `Bot.secret[]` in Medplum and injected as `process.env` in the `awslambda` runtime.
+| `CLINIC_DEFAULT_NPI` | pharmacy-order-bot | Fallback NPI when prescriber absent |
 
 ---
 
-## What still needs to be built
+## CI/CD — Bot Auto-Deploy
 
-### High priority
-- [ ] **Frontend pages — flesh out** — PatientPage tabs, Encounter documentation UI, Non-Rx add/edit form
-- [ ] **MSO / clinic org hierarchy models** — `Organization` + `OrganizationAffiliation` profiles for MSO → clinic group → clinic
-- [ ] **DPC membership plan models** — `Coverage` profile extensions for tier, billing cycle, included services
-- [ ] **Provider credentialing models** — `Practitioner` + `PractitionerRole` extensions for NPI, DEA, state licenses
+Bots are automatically deployed to staging when source files change.
 
-### Medium priority
-- [ ] **Pharmacy adapter microservice** — translates `OutboundPrescriptionPayload` to DoseSpot / Surescripts / retail APIs
-- [ ] **FHIR StructureDefinitions + ValueSets** — register non-Rx profile and ValueSets in Medplum
-- [ ] **SearchParameter for stripe-subscription-id** — enables efficient `Coverage` lookup by Stripe ID
+**Workflow:** `.github/workflows/deploy-medavida-bots.yml`  
+**Triggers:** Push to `main` touching `packages/medavida-bots/src/**` (or esbuild script, package.json, or the workflow file itself)  
+**Manual trigger:** GitHub Actions UI — deploy all bots or a single named bot
 
-### Lower priority
-- [ ] **Care coordination / referral tracking** — `ServiceRequest` + `Task` workflow for referrals between clinics
-- [ ] **Deployment — Helm chart customization** — extend Medplum's Helm chart for MSO-specific config
-- [ ] **CI/CD pipeline** — GitHub Actions: build fork → run bot tests → deploy to staging → promote to prod
+**Required GitHub secrets** (set on `MedavidaInc/medplum`):
 
----
+| Secret | Value source |
+|---|---|
+| `MEDPLUM_STAGING_CLIENT_ID` | `medavida/staging/app` → `MEDPLUM_CLIENT_ID` in AWS Secrets Manager |
+| `MEDPLUM_STAGING_CLIENT_SECRET` | `medavida/staging/app` → `MEDPLUM_CLIENT_SECRET` in AWS Secrets Manager |
 
-## Things to replace before production
-
-- `https://medavida.com/fhir/...` → verify this is your actual domain (or replace globally if not)
-- Stripe Price IDs → real IDs from your Stripe dashboard
-- `CLINIC_DEFAULT_NPI` → your clinic's actual NPI
-- `PHARMACY_ADAPTER_URL` → real adapter URL when built
+**What the workflow does:**
+1. `npm ci` + `npm run build` (esbuild → `dist/bots/`)
+2. Gets a Medplum `client_credentials` access token
+3. For each bot: `POST /fhir/R4/Binary` with the compiled JS, then `PUT /fhir/R4/Bot/<id>` with `executableCode.url = "Binary/<id>"`
+4. Bot IDs are read from `medplum.config.json` at runtime
 
 ---
 
-## Maintaining the fork
+## Extension URL Namespace
 
-### Git remotes
-```
-origin    https://github.com/MedavidaInc/medplum.git   ← our fork
-upstream  https://github.com/medplum/medplum.git        ← Medplum upstream
-```
+All custom FHIR extensions: `https://medavida.com/fhir/StructureDefinition/`  
+All custom CodeSystems: `https://medavida.com/fhir/CodeSystem/`
 
-### Monthly rebase workflow
+---
+
+## Forking Strategy
+
+- Fork lives at `MedavidaInc/medplum` — upstream at `medplum/medplum`
+- Rebase on upstream `main` **monthly** — never diverge core FHIR engine or auth
+- Custom code only in `packages/medavida-bots/` — never modify upstream packages
+- All custom workflows prefixed `deploy-medavida-*` to avoid conflicts with upstream CI
+
+### Monthly rebase
+
 ```sh
 git fetch upstream
 git rebase upstream/main
-# resolve any conflicts (should only be root config files)
+# resolve conflicts (usually only root config files)
 npm test
-# if @medplum/* versions bumped, update package.json in medavida-bots and medavida-app
-npm install
 git push origin main
 ```
 
-### What NOT to modify in upstream packages
-- `packages/server/` — core FHIR engine
-- `packages/core/`, `packages/react/`, `packages/fhirtypes/` — SDKs we depend on
-- Auth and access policy logic
-
-If a patch to upstream code is needed, open a PR to `medplum/medplum` first. If urgent, isolate and document the patch so it can be dropped after the upstream fix merges.
-
 ---
 
-## Running locally
+## Running Locally
 
 ```sh
-# Bots
+# Bot tests (no running server needed — uses @medplum/mock)
 cd packages/medavida-bots
 npm install
-npm test          # vitest with @medplum/mock — no real API calls
-npm run build     # tsc + esbuild → dist/
+npm test
 
-# App
-cd packages/medavida-app
-npm install
-npm run dev       # Vite dev server on localhost:3001
-npm run build     # production build
+# Build bots
+npm run build   # outputs to dist/bots/
 ```
+
+See [LOCAL_LAUNCH.md](LOCAL_LAUNCH.md) for running the full Medplum server locally.
 
 ---
 
-## Reference links
+## Reference Links
 
 - Medplum docs: https://www.medplum.com/docs
-- Medplum bot examples (Stripe): https://github.com/medplum/medplum/tree/main/examples/medplum-demo-bots/src/stripe-bots
-- Medplum DoseSpot integration: https://www.medplum.com/docs/integration/dosespot/getting-started
-- FHIR R4 MedicationStatement: https://www.hl7.org/fhir/medicationstatement.html
-- NIH DSLD (supplement database): https://dsld.nlm.nih.gov
-- HPUS (homeopathic codes): https://www.hpus.com
+- FHIR R4 spec: https://hl7.org/fhir/R4/
 - Stripe webhook events: https://stripe.com/docs/api/events/types
+- Django backend docs: `medavida-backend/docs/`
