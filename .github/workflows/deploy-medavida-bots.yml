@@ -1,0 +1,123 @@
+name: Deploy MedaVida Bots
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/medavida-bots/src/**'
+      - 'packages/medavida-bots/package.json'
+      - 'packages/medavida-bots/esbuild-script.mjs'
+      - '.github/workflows/deploy-medavida-bots.yml'
+  workflow_dispatch:
+    inputs:
+      bot:
+        description: "Bot to deploy (leave blank for all)"
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - stripe-webhook-bot
+          - dpc-payment-bot
+          - pharmacy-order-bot
+
+concurrency:
+  group: deploy-medavida-bots
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build & Deploy Bots
+    runs-on: ubuntu-latest
+
+    env:
+      MEDPLUM_BASE_URL: https://medplum.staging.demoatable.com
+      MEDPLUM_PROJECT_ID: d75b420c-527e-43c7-81f6-e25ca75360aa
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: packages/medavida-bots/package-lock.json
+
+      - name: Install dependencies
+        working-directory: packages/medavida-bots
+        run: npm ci
+
+      - name: Build bots
+        working-directory: packages/medavida-bots
+        run: npm run build
+
+      - name: Get Medplum access token
+        id: token
+        env:
+          MEDPLUM_CLIENT_ID: ${{ secrets.MEDPLUM_STAGING_CLIENT_ID }}
+          MEDPLUM_CLIENT_SECRET: ${{ secrets.MEDPLUM_STAGING_CLIENT_SECRET }}
+        run: |
+          TOKEN=$(curl -sf -X POST "$MEDPLUM_BASE_URL/oauth2/token" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "grant_type=client_credentials&client_id=$MEDPLUM_CLIENT_ID&client_secret=$MEDPLUM_CLIENT_SECRET" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy bots
+        working-directory: packages/medavida-bots
+        env:
+          MEDPLUM_TOKEN: ${{ steps.token.outputs.token }}
+          DEPLOY_BOT: ${{ github.event.inputs.bot }}
+        run: |
+          deploy_bot() {
+            local NAME="$1"
+            local BOT_ID="$2"
+            local DIST_FILE="$3"
+
+            echo "--- Deploying $NAME ($BOT_ID) ---"
+
+            # Upload compiled JS as a Binary resource
+            BIN_ID=$(curl -sf -X POST "$MEDPLUM_BASE_URL/fhir/R4/Binary" \
+              -H "Authorization: Bearer $MEDPLUM_TOKEN" \
+              -H "Content-Type: text/javascript" \
+              --data-binary "@$DIST_FILE" \
+              | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+            echo "  Uploaded binary: $BIN_ID"
+
+            # Update bot executableCode to point at the new Binary
+            HTTP_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+              -X PUT "$MEDPLUM_BASE_URL/fhir/R4/Bot/$BOT_ID" \
+              -H "Authorization: Bearer $MEDPLUM_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"resourceType\": \"Bot\",
+                \"id\": \"$BOT_ID\",
+                \"name\": \"$NAME\",
+                \"runtimeVersion\": \"vmcontext\",
+                \"executableCode\": {
+                  \"contentType\": \"application/javascript\",
+                  \"url\": \"Binary/$BIN_ID\"
+                }
+              }")
+            echo "  Bot updated (HTTP $HTTP_STATUS)"
+          }
+
+          # Read bot IDs from medplum.config.json
+          STRIPE_BOT_ID=$(python3 -c "import json; d=json.load(open('medplum.config.json')); print(next(b['id'] for b in d['bots'] if b['name']=='stripe-webhook-bot'))")
+          DPC_BOT_ID=$(python3 -c "import json; d=json.load(open('medplum.config.json')); print(next(b['id'] for b in d['bots'] if b['name']=='dpc-payment-bot'))")
+          PHARMACY_BOT_ID=$(python3 -c "import json; d=json.load(open('medplum.config.json')); print(next(b['id'] for b in d['bots'] if b['name']=='pharmacy-order-bot'))")
+
+          if [ -z "$DEPLOY_BOT" ] || [ "$DEPLOY_BOT" = "stripe-webhook-bot" ]; then
+            deploy_bot "stripe-webhook-bot"  "$STRIPE_BOT_ID"   "dist/bots/stripe-webhook-bot.js"
+          fi
+          if [ -z "$DEPLOY_BOT" ] || [ "$DEPLOY_BOT" = "dpc-payment-bot" ]; then
+            deploy_bot "dpc-payment-bot"     "$DPC_BOT_ID"      "dist/bots/dpc-payment-bot.js"
+          fi
+          if [ -z "$DEPLOY_BOT" ] || [ "$DEPLOY_BOT" = "pharmacy-order-bot" ]; then
+            deploy_bot "pharmacy-order-bot"  "$PHARMACY_BOT_ID" "dist/bots/pharmacy-order-bot.js"
+          fi
+
+          echo ""
+          echo "✅ Bot deployment complete."
