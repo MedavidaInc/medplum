@@ -116,12 +116,12 @@ Bots are automatically deployed to staging when source files change.
 **Triggers:** Push to `main` touching `packages/medavida-bots/src/**` (or esbuild script, package.json, or the workflow file itself)  
 **Manual trigger:** GitHub Actions UI — deploy all bots or a single named bot
 
-**Required GitHub secrets** (set on `MedavidaInc/medplum`):
+**Required GitHub secrets** (set on `MedavidaInc/medplum`, configured 2026-05-11):
 
-| Secret | Value source |
+| Secret | Value |
 |---|---|
-| `MEDPLUM_STAGING_CLIENT_ID` | `medavida/staging/app` → `MEDPLUM_CLIENT_ID` in AWS Secrets Manager |
-| `MEDPLUM_STAGING_CLIENT_SECRET` | `medavida/staging/app` → `MEDPLUM_CLIENT_SECRET` in AWS Secrets Manager |
+| `MEDPLUM_STAGING_CLIENT_ID` | `31b94039-e535-4406-891b-a03b80dbefb6` |
+| `MEDPLUM_STAGING_CLIENT_SECRET` | From `medavida/staging/app` → `MEDPLUM_CLIENT_SECRET` in AWS Secrets Manager |
 
 **What the workflow does:**
 1. `npm ci` + `npm run build` (esbuild → `dist/bots/`)

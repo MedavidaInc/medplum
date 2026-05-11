@@ -2,7 +2,8 @@
 
 > Last updated: 2026-05-11  
 > Stack: ECS Fargate + RDS PostgreSQL + ElastiCache Redis + S3 + ALB + CloudFront  
-> IaC: Terraform (`medavida-backend/terraform/`)
+> IaC: Terraform (`medavida-backend/terraform/`)  
+> CI/CD: GitHub Actions — all three components deploy automatically on push to `main`
 
 ---
 
@@ -73,6 +74,8 @@ Flat JSON object injected as individual environment variables into ECS tasks.
 
 ## Deploying the Django Backend
 
+> **CI/CD active:** Pushes to `main` in `MedavidaInc/medavida-backend` deploy automatically (test → build → migrate → deploy). Manual steps below are for hotfixes or first-time setup only.
+
 ```bash
 # 1. Authenticate to ECR
 aws sso login --sso-session medavida
@@ -101,6 +104,8 @@ AWS_PROFILE=medavida aws ecs update-service --cluster medavida --service medavid
 ---
 
 ## Deploying the React Frontend
+
+> **CI/CD active:** Pushes to `main` in `MedavidaInc/Medavidapracticedashboard` deploy automatically (build → S3 sync → CloudFront invalidation). Manual script below is for local deploys or hotfixes.
 
 Use the deploy script from the frontend repo:
 
