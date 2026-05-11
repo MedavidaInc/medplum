@@ -1,32 +1,44 @@
 # MedaVida — Local Launch Instructions
 
-> Last updated: 2026-05-06  
-> Node: v22.17.0 | npm: 10.9.2
-
-There are two ways to run the stack locally depending on what you're working on.
+> Last updated: 2026-05-11  
+> Node: v20+ | npm: 10+
 
 ---
 
-## Option A — Simple (recommended for frontend + bot development)
+## Option A — Bot Development (recommended)
 
-Runs Postgres and Redis in Docker, the Medplum server directly with Node, and the custom app with Vite. No Kubernetes required.
+Run bot tests only — no server required. Uses `@medplum/mock`.
+
+```sh
+cd packages/medavida-bots
+npm install
+npm test          # vitest with @medplum/mock
+npm run build     # esbuild → dist/bots/
+```
+
+This is the fastest path for iterating on bot logic.
+
+---
+
+## Option B — Full Stack with Docker (server + bots)
+
+Runs Postgres and Redis in Docker, the Medplum server with Node. Use this when you need to test bots against a real Medplum API locally.
 
 ### Prerequisites
 
-- [Docker Desktop](https://docs.docker.com/desktop/) running
-- Node v22+ (`node --version`)
-- npm 10+ (`npm --version`)
+- Docker Desktop running
+- Node v20+ (`node --version`)
 
-### 1. Start the backing services
+### 1. Start backing services
 
 ```sh
 # From the repo root
 docker-compose up -d
 ```
 
-This starts:
+Starts:
 - PostgreSQL on `localhost:5432` (user: `medplum`, pass: `medplum`)
-- Redis on `localhost:6379` (pass: `medplum`)
+- Redis on `localhost:6379`
 
 ### 2. Start the Medplum server
 
@@ -36,163 +48,90 @@ npm install
 npm run dev
 ```
 
-Server runs on **http://localhost:8103**  
-Health check: http://localhost:8103/healthcheck  
-FHIR API: http://localhost:8103/fhir/R4/metadata
+Server: `http://localhost:8103`  
+Health check: `http://localhost:8103/healthcheck`  
+Default admin: `admin@example.com` / `medplum_admin`
 
-### 3. Start the MedaVida app
-
-In a new terminal:
-
-```sh
-cd packages/medavida-app
-npm install
-npm run dev
-```
-
-App runs on **http://localhost:3001**
-
-> Default Medplum admin credentials on a fresh local instance:  
-> Email: `admin@example.com` | Password: `medplum_admin`  
-> Change these immediately after first login.
-
-### 4. Run the bot tests
+### 3. Build and upload bots (optional)
 
 ```sh
 cd packages/medavida-bots
 npm install
-npm test
+npm run build
+
+# Get a local token, then upload each bot Binary and update Bot.executableCode.url
+# See AWS_DEPLOYMENT.md — "Deploying Medplum Bots" for the exact curl commands
+# (use http://localhost:8103 as the base URL)
 ```
 
-Tests use `@medplum/mock` — no running server required.
+> The Medplum CLI `medplum bot deploy` does **not** work against self-hosted servers — always use the FHIR API Binary pattern.
 
-### Stopping everything
+### Stop everything
 
 ```sh
-# Stop Docker services
 docker-compose down
-
-# To also wipe the Postgres volume (full reset)
-docker-compose down -v
+docker-compose down -v   # also wipes Postgres volume
 ```
 
 ---
 
-## Option B — Full stack with Kubernetes + Fission (bot deployment)
+## Option C — Against Staging Directly
 
-Use this when you need to deploy and test bots in an environment that mirrors production. Requires Docker Desktop with Kubernetes enabled.
-
-### Prerequisites
-
-- [Docker Desktop](https://docs.docker.com/desktop/) with **Kubernetes enabled**
-  - Settings → Kubernetes → Enable Kubernetes → Apply & Restart
-  - Allocate at least **8 GB RAM** and **4 CPUs**
-- [kubectl](https://kubernetes.io/docs/tasks/tools/)
-- [Helm](https://helm.sh/docs/intro/install/)
-- [Fission CLI](https://fission.io/docs/installation/)
-
-### Verify prerequisites
+For frontend development, just point your React app at staging:
 
 ```sh
-kubectl config current-context   # should be: docker-desktop
-kubectl get nodes                 # should show: docker-desktop   Ready
-helm version
-fission version
+cd /path/to/Medavidapracticedashboard
+
+# .env.local
+VITE_API_URL=https://api.staging.demoatable.com
+VITE_MEDPLUM_BASE_URL=https://medplum.staging.demoatable.com/
+VITE_MEDPLUM_CLIENT_ID=d097cfaf-f137-4ae2-8c3c-ba815150687f
+
+npm run dev   # localhost:5173
 ```
 
-### Deploy the full stack
+Login with `demo@medavida.com` / `MedaVida2026!`.
 
-```sh
-cd examples/medplum-local-k8s
-./deploy-local.sh
-```
-
-This script handles everything:
-1. Creates the `medplum` namespace
-2. Installs Fission (serverless bot runtime) via Helm
-3. Deploys Postgres + Redis to Kubernetes
-4. Deploys the Medplum server via our Helm chart
-5. Deploys the Medplum web app
-6. Creates the Fission Node.js environment for bots
-
-### Access points after deployment
-
-| Service | URL |
-|---|---|
-| Medplum App (upstream UI) | http://localhost:3000 |
-| Medplum Server | http://localhost:8103 |
-| FHIR API | http://localhost:8103/fhir/R4/metadata |
-
-### Start the MedaVida app (separate step)
-
-```sh
-cd packages/medavida-app
-npm install
-npm run dev   # runs on http://localhost:3001
-```
-
-### Build and deploy a bot
-
-```sh
-# Build all bots
-cd packages/medavida-bots
-npm run build   # outputs to dist/
-
-# Deploy a specific bot via Medplum CLI
-npx medplum bot deploy dpc-payment-bot
-```
-
-### Tear down
-
-```sh
-cd examples/medplum-local-k8s
-./cleanup-local.sh
-```
+The dev mode login bypass also works: any email containing "demo" auto-authenticates against staging without requiring valid credentials.
 
 ---
 
-## Useful commands
+## Useful Commands
 
 ```sh
-# Check Medplum server health
+# Check Medplum server health (local)
 curl http://localhost:8103/healthcheck
 
-# Tail Medplum server logs (Option A)
-cd packages/server && npm run dev
+# Check Medplum server health (staging)
+curl https://medplum.staging.demoatable.com/healthcheck
 
-# Tail Medplum server logs (Option B — Kubernetes)
-kubectl logs -n medplum deployment/medplum -f
+# Run bot tests with coverage
+cd packages/medavida-bots
+npm run test:coverage
 
-# Check all pods (Option B)
-kubectl get pods -n medplum
+# Lint bots
+npm run lint
 
-# Check Fission environments
-fission env list
-
-# Reset Postgres (Option A — full wipe)
-docker-compose down -v && docker-compose up -d
+# Build and inspect output
+npm run build
+ls dist/bots/
 ```
 
 ---
 
 ## Troubleshooting
 
-**`docker-compose up` fails — port already in use**  
-Another process is on 5432 or 6379. Stop it or change the port mapping in `docker-compose.yml`.
+**`docker-compose up` fails — port in use**  
+Stop any local Postgres (`brew services stop postgresql`) or Redis instance, or change the port mapping in `docker-compose.yml`.
 
 **Medplum server won't connect to Postgres**  
-Make sure Docker services are running: `docker-compose ps`. Check the server config at `packages/server/medplum.config.json` — database host should be `localhost`.
+Check `docker-compose ps`. The server config is at `packages/server/medplum.config.json` — database host should be `localhost`.
 
-**Kubernetes DNS test fails during `deploy-local.sh`**  
-This is often a transient warning and the deployment continues. If services can't reach each other, restart Docker Desktop and re-enable Kubernetes.
+**Bot tests fail**  
+Tests use `@medplum/mock` and don't need a running server. If they fail, run `npm install` in `packages/medavida-bots/` and try again.
 
-**Fission Node.js environment creation fails**  
-Run manually after the script completes:
-```sh
-fission environment create --name nodejs \
-  --image ghcr.io/fission/node-env \
-  --builder ghcr.io/fission/node-builder
-```
+**"Failed to fetch" on local React app login**  
+Check that `VITE_MEDPLUM_CLIENT_ID` is set in `.env.local`. The `MedplumClient` requires a `clientId` to call `startLogin`.
 
-**Bot tests fail locally**  
-Tests use `@medplum/mock` and don't need a running server. If they fail, check that `npm install` completed in `packages/medavida-bots/`.
+**CORS error on `POST /auth/login`**  
+The Medplum server's `MEDPLUM_ALLOWED_ORIGINS` env var must include your local origin (`http://localhost:5173`). For local dev against the staging Medplum server this is a known gap — use the demo bypass or Option C.

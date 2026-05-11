@@ -185,17 +185,17 @@ async function writePaymentNotice(
   status: string,
   note: string
 ): Promise<PaymentNotice> {
+  // Local fhirtypes marks `payment` required but FHIR R4 allows omitting it when no reconciliation exists yet.
   return medplum.createResource<PaymentNotice>({
     resourceType: 'PaymentNotice',
     status: 'active',
     request: createReference(coverage),
-    payment: createReference(coverage) as unknown as PaymentNotice['payment'],
     created: new Date().toISOString(),
-    recipient: { reference: `Patient/${patient.id}` } as PaymentNotice['recipient'],
+    recipient: { reference: `Patient/${patient.id}` },
     amount: { value: 0, currency: 'USD' },
     paymentStatus: {
       coding: [{ system: 'http://terminology.hl7.org/CodeSystem/paymentstatus', code: status }],
       text: note,
     },
-  });
+  } as unknown as PaymentNotice);
 }

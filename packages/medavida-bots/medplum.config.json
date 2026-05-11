@@ -1,0 +1,22 @@
+{
+  "bots": [
+    {
+      "name": "dpc-payment-bot",
+      "id": "f65f3639-8518-4842-bf15-aefaf365687f",
+      "source": "src/bots/dpc-payment-bot.ts",
+      "dist": "dist/bots/dpc-payment-bot.js"
+    },
+    {
+      "name": "pharmacy-order-bot",
+      "id": "a3a83673-fab7-47c8-9a35-8248ea03b7e8",
+      "source": "src/bots/pharmacy-order-bot.ts",
+      "dist": "dist/bots/pharmacy-order-bot.js"
+    },
+    {
+      "name": "stripe-webhook-bot",
+      "id": "3f531da1-2312-4b7d-88a9-aee9956eb652",
+      "source": "src/bots/stripe-webhook-bot.ts",
+      "dist": "dist/bots/stripe-webhook-bot.js"
+    }
+  ]
+}

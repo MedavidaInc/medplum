@@ -52,19 +52,19 @@ async function handleInvoicePaid(medplum: MedplumClient, invoice: Stripe.Invoice
     await medplum.updateResource<Coverage>({ ...coverage, status: 'active' });
   }
 
+  // Local fhirtypes marks `payment` required but FHIR R4 allows omitting it when no reconciliation exists yet.
   await medplum.createResource<PaymentNotice>({
     resourceType: 'PaymentNotice',
     status: 'active',
     request: { reference: `Coverage/${coverage.id}` },
-    payment: { reference: `Coverage/${coverage.id}` },
-    recipient: coverage.beneficiary as unknown as PaymentNotice['recipient'],
+    recipient: { reference: coverage.beneficiary?.reference ?? '' },
     created: new Date().toISOString(),
     amount: { value: (invoice.amount_paid ?? 0) / 100, currency: (invoice.currency?.toUpperCase() ?? 'USD') as 'USD' },
     paymentStatus: {
       coding: [{ system: 'http://terminology.hl7.org/CodeSystem/paymentstatus', code: 'paid' }],
       text: `Invoice paid — Stripe invoice ${invoice.id}`,
     },
-  });
+  } as unknown as PaymentNotice);
 }
 
 async function handleInvoicePaymentFailed(medplum: MedplumClient, invoice: Stripe.Invoice): Promise<void> {
@@ -115,15 +115,14 @@ async function handleSubscriptionDeleted(
     resourceType: 'PaymentNotice',
     status: 'active',
     request: { reference: `Coverage/${coverage.id}` },
-    payment: { reference: `Coverage/${coverage.id}` },
-    recipient: coverage.beneficiary as unknown as PaymentNotice['recipient'],
+    recipient: { reference: coverage.beneficiary?.reference ?? '' },
     created: new Date().toISOString(),
     amount: { value: 0, currency: 'USD' },
     paymentStatus: {
       coding: [{ system: 'http://terminology.hl7.org/CodeSystem/paymentstatus', code: 'cancelled' }],
       text: `Stripe subscription ${subscription.id} deleted — coverage cancelled`,
     },
-  });
+  } as unknown as PaymentNotice);
 }
 
 async function handleSubscriptionUpdated(

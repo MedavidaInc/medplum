@@ -3,7 +3,7 @@
   "baseUrl": "https://api.staging.demoatable.com/",
   "appBaseUrl": "https://app.medavida.com/",
   "storageBaseUrl": "https://api.staging.demoatable.com/storage/",
-  "binaryStorage": "file:./binary/",
+  "binaryStorage": "s3:medavida-staging-binaries",
   "supportEmail": "support@medavida.com",
   "vmContextBotsEnabled": true,
   "defaultBotRuntimeVersion": "vmcontext",
