@@ -2,19 +2,19 @@
   "bots": [
     {
       "name": "dpc-payment-bot",
-      "id": "f65f3639-8518-4842-bf15-aefaf365687f",
+      "id": "736f9354-a330-4484-bcb5-5d319fbcf2be",
       "source": "src/bots/dpc-payment-bot.ts",
       "dist": "dist/bots/dpc-payment-bot.js"
     },
     {
       "name": "pharmacy-order-bot",
-      "id": "a3a83673-fab7-47c8-9a35-8248ea03b7e8",
+      "id": "160cd992-b3fa-420f-b747-2a678c8b4373",
       "source": "src/bots/pharmacy-order-bot.ts",
       "dist": "dist/bots/pharmacy-order-bot.js"
     },
     {
       "name": "stripe-webhook-bot",
-      "id": "3f531da1-2312-4b7d-88a9-aee9956eb652",
+      "id": "a16d7019-9c8a-4dcb-8b7a-1d8c58bb8ec8",
       "source": "src/bots/stripe-webhook-bot.ts",
       "dist": "dist/bots/stripe-webhook-bot.js"
     }

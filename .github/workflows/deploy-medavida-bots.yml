@@ -32,7 +32,7 @@ jobs:
 
     env:
       MEDPLUM_BASE_URL: https://medplum.staging.medavida.app
-      MEDPLUM_PROJECT_ID: d75b420c-527e-43c7-81f6-e25ca75360aa
+      MEDPLUM_PROJECT_ID: 835efbfd-da6b-484b-9da1-26c18a3e306a
 
     steps:
       - uses: actions/checkout@v4
