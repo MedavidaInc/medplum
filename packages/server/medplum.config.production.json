@@ -1,8 +1,8 @@
 {
   "port": 8103,
-  "baseUrl": "https://api.staging.demoatable.com/",
-  "appBaseUrl": "https://app.medavida.com/",
-  "storageBaseUrl": "https://api.staging.demoatable.com/storage/",
+  "baseUrl": "https://medplum.staging.medavida.app/",
+  "appBaseUrl": "https://app.staging.medavida.app/",
+  "storageBaseUrl": "https://medplum.staging.medavida.app/storage/",
   "binaryStorage": "s3:medavida-staging-binaries",
   "supportEmail": "support@medavida.com",
   "vmContextBotsEnabled": true,
@@ -10,16 +10,17 @@
   "allowedOrigins": "*",
   "introspectionEnabled": true,
   "database": {
-    "host": "medavida-staging.czsg0qgye6mw.us-east-2.rds.amazonaws.com",
+    "host": "medavida-django-staging.czsg0qgye6mw.us-east-2.rds.amazonaws.com",
     "port": 5432,
-    "dbname": "medavida",
+    "dbname": "medplum",
     "username": "medavida",
-    "password": "wdY4RMWTPMcLfxPTVI0giBxVRvMm87os",
+    "password": "MGVjSqOBzd0y6eIYc2BVfNYa10by8fky",
     "ssl": { "rejectUnauthorized": false }
   },
   "redis": {
-    "host": "medavida-staging.eghfw4.0001.use2.cache.amazonaws.com",
-    "port": 6379
+    "host": "medavida-django-staging.eghfw4.0001.use2.cache.amazonaws.com",
+    "port": 6379,
+    "db": 1
   },
   "bullmq": {
     "removeOnFail": {"count": 1},
