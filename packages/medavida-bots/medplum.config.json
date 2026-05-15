@@ -1,6 +1,12 @@
 {
   "bots": [
     {
+      "name": "medication-request-bot",
+      "id": "TBD",
+      "source": "src/bots/medication-request-bot.ts",
+      "dist": "dist/bots/medication-request-bot.js"
+    },
+    {
       "name": "dpc-payment-bot",
       "id": "736f9354-a330-4484-bcb5-5d319fbcf2be",
       "source": "src/bots/dpc-payment-bot.ts",
