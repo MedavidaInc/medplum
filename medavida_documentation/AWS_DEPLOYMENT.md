@@ -1,6 +1,6 @@
 # MedaVida — AWS Deployment Guide
 
-> Last updated: 2026-05-11  
+> Last updated: 2026-05-27  
 > Stack: ECS Fargate + RDS PostgreSQL + ElastiCache Redis + S3 + ALB + CloudFront  
 > IaC: Terraform (`medavida-backend/terraform/`)  
 > CI/CD: GitHub Actions — all three components deploy automatically on push to `main`
@@ -38,7 +38,7 @@ Internet
 | ECS Service (medplum) | `medavida-medplum` (task def: `medavida-medplum:11`) | us-east-2 |
 | ECR (Django) | `medavida-django` | us-east-2 |
 | ECR (Medplum) | `medavida-medplum` | us-east-2 |
-| RDS (PostgreSQL) | `medavida-staging.czsg0qgye6mw.us-east-2.rds.amazonaws.com:5432` | us-east-2 |
+| RDS (PostgreSQL) | `medavida-django-staging.czsg0qgye6mw.us-east-2.rds.amazonaws.com:5432` | us-east-2 |
 | ElastiCache (Redis) | `medavida-staging.eghfw4.0001.use2.cache.amazonaws.com:6379` | us-east-2 |
 | S3 (frontend) | `medavida-staging-frontend` | us-east-2 |
 | S3 (Medplum binaries) | `medavida-staging-binaries` | us-east-2 |
@@ -83,8 +83,8 @@ aws ecr get-login-password --region us-east-2 --profile medavida | \
   docker login --username AWS --password-stdin \
   049815585091.dkr.ecr.us-east-2.amazonaws.com
 
-# 2. Build and push
-docker build -t 049815585091.dkr.ecr.us-east-2.amazonaws.com/medavida-django:latest .
+# 2. Build and push  (--platform required — Mac builds are ARM64, ECS is AMD64)
+docker build --platform linux/amd64 -t 049815585091.dkr.ecr.us-east-2.amazonaws.com/medavida-django:latest .
 docker push 049815585091.dkr.ecr.us-east-2.amazonaws.com/medavida-django:latest
 
 # 3. Run migrations
@@ -176,22 +176,33 @@ curl -sf -X PUT "https://medplum.staging.demoatable.com/fhir/R4/Bot/3f531da1-231
 
 ## Medplum Admin
 
-URL: `https://medplum.staging.demoatable.com/` (no Google OAuth — direct password login)
+> There is no Medplum web console. All admin operations must go through the API or the
+> Django management commands described in `MEDPLUM_SERVICE_ACCOUNT.md`.
 
-| Account | Email | Password |
-|---|---|---|
-| Super admin | `admin@example.com` | `medplum_admin` |
-| Demo practitioner | `demo@medavida.com` | `MedaVida2026!` |
+**Staging Medplum URL:** `https://medplum.staging.medavida.app/`
 
-**Projects:**
-- `161452d9` — FHIR R4 (default)
-- `d75b420c` — MedaVida (bots, ClientApplications, patient data)
+**User accounts (staging):**
+
+| Account | Email | Password | Role |
+|---|---|---|---|
+| Admin | `admin@example.com` | `medplum_admin` | Project admin (no super-admin flag — see note below) |
+| Demo practitioner | `demo@medavida.com` | `MedaVida2026!` | Practitioner, no admin rights |
+
+> **Important:** `admin@example.com` exists in the DB but is **not** a Medplum super-admin
+> (`User.admin` is unset). It also had no `ProjectMembership` on initial boot, making the
+> Medplum admin API inaccessible. The `bootstrap_medplum` management command fixes this on
+> a fresh instance. See `MEDPLUM_SERVICE_ACCOUNT.md`.
+
+**Project (staging):**
+- `835efbfd-da6b-484b-9da1-26c18a3e306a` — MedaVida (FHIR data, bots, ClientApplications)
 
 **ClientApplications (MedaVida project):**
-- `31b94039` — Django backend (`client_credentials` grant)
-- `d097cfaf` — React SPA (`authorization_code` grant, redirect: `https://app.staging.demoatable.com/`)
+- `6e5f62ba-5380-4e62-87a8-dfa977210955` — Django backend (`client_credentials` grant) — credentials in `MedplumKeys` Django DB table and `medavida/staging/app` Secrets Manager
+- `cbeaa6ae-bca6-4869-9c74-28f882d1a8bf` — React SPA (`authorization_code` grant)
 
 **Creating a ClientApplication correctly:** Use `POST /admin/projects/<projectId>/client` — not `POST /fhir/R4/ClientApplication`. The admin endpoint atomically creates the `ClientApplication` + `ProjectMembership`. Without a membership, `client_credentials` returns "Invalid client".
+
+**`MEDPLUM_ADMIN_EMAIL` / `MEDPLUM_ADMIN_PASSWORD`** are referenced in `seed_staging.sh` but are **not** currently set in `medavida/staging/app` Secrets Manager. The script falls back to `admin@example.com` / `medplum_admin`.
 
 ---
 
@@ -223,8 +234,12 @@ State backend: S3 bucket `medavida-terraform-state`, key `staging/terraform.tfst
 ## Known Quirks
 
 - **ECR repo name** — Django image is `medavida-django` (not `medavida`)
+- **Docker build platform** — always pass `--platform linux/amd64` when building on a Mac; without it the image is ARM64 and ECS throws `image Manifest does not contain descriptor matching platform 'linux/amd64'`
+- **RDS hostname** — actual identifier is `medavida-django-staging.czsg0qgye6mw.us-east-2.rds.amazonaws.com`; older docs and the ECS task definition referenced `medavida-staging.*` (without `-django-`) which does not resolve
+- **`medavida/staging/db-password`** — has drifted from the real password; use `DATABASE_URL` from `medavida/staging/app` as the authoritative DB password source
 - **`MEDPLUM_BINARY_STORAGE` format** — `s3:bucketname`, not `s3://bucketname`
 - **`MEDPLUM_DATABASE_SSL`** — must be a JSON string; sub-key env vars don't work
 - **`MEDPLUM_ALLOWED_ORIGINS`** — must include every browser origin; caused CORS "Failed to fetch" on login (fixed 2026-05-11 in rev 11)
 - **Stripe webhook signing** — `stripe==15.0.1` uses raw UTF-8 bytes of the full `whsec_...` string, does not base64-decode
 - **`migrate_with_views`** — referenced in task def but not implemented; always use `--overrides` with `python manage.py migrate --noinput`
+- **Medplum admin account** — `admin@example.com` exists on first boot but has no `ProjectMembership` and no super-admin flag; it cannot call the Medplum admin API until `bootstrap_medplum` is run (see `MEDPLUM_SERVICE_ACCOUNT.md`)
