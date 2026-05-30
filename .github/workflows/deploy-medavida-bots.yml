@@ -121,3 +121,13 @@ jobs:
 
           echo ""
           echo "✅ Bot deployment complete."
+
+      - name: Ensure Medplum Subscriptions
+        env:
+          MEDPLUM_BASE_URL: ${{ env.MEDPLUM_BASE_URL }}
+          MEDPLUM_CLIENT_ID: ${{ secrets.MEDPLUM_STAGING_CLIENT_ID }}
+          MEDPLUM_CLIENT_SECRET: ${{ secrets.MEDPLUM_STAGING_CLIENT_SECRET }}
+          DJANGO_WEBHOOK_URL: https://api.staging.medavida.app/api/emr/webhook/medplum/
+          MEDPLUM_WEBHOOK_SECRET: ${{ secrets.MEDPLUM_STAGING_WEBHOOK_SECRET }}
+        working-directory: packages/medavida-bots
+        run: node dist/lib/ensure-subscriptions.js
