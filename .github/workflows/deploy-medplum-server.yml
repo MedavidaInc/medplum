@@ -127,10 +127,29 @@ jobs:
           role-to-assume: ${{ secrets.STAGING_AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Force new deployment
+      - name: Roll onto the SHA-pinned image
+        env:
+          SHA: ${{ needs.build-push.outputs.image_tag }}
         run: |
-          CLUSTER=$(aws ecs list-clusters --query 'clusterArns[?contains(@,`medavida`)]|[0]' --output text)
-          aws ecs update-service --cluster "$CLUSTER" --service medavida-medplum --force-new-deployment >/dev/null
+          set -euo pipefail
+          CLUSTER=medavida
+          # Register a new task-def revision identical to the running one, with the
+          # image pinned to the freshly built SHA (immutable → deterministic
+          # restarts). force-new-deployment would just redeploy the currently
+          # pinned SHA, so we register a new revision + point the service at it.
+          CUR_IMG=$(aws ecs describe-task-definition --task-definition medavida-medplum \
+            --query 'taskDefinition.containerDefinitions[0].image' --output text)
+          IMAGE="${CUR_IMG%:*}:${SHA}"
+          NEW_TD=$(aws ecs describe-task-definition --task-definition medavida-medplum \
+            --query 'taskDefinition' --output json \
+            | jq --arg img "$IMAGE" '.containerDefinitions[0].image = $img
+                | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                      .compatibilities, .registeredAt, .registeredBy)')
+          NEW_ARN=$(aws ecs register-task-definition --cli-input-json "$NEW_TD" \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "Registered $NEW_ARN (image pinned to :$SHA)"
+          aws ecs update-service --cluster "$CLUSTER" --service medavida-medplum \
+            --task-definition "$NEW_ARN" >/dev/null
           echo "Waiting for service to stabilize…"
           aws ecs wait services-stable --cluster "$CLUSTER" --services medavida-medplum
 
