@@ -7,7 +7,13 @@
 import esbuild from 'esbuild';
 
 const options = {
-  entryPoints: ['./src/index.ts', './src/otel/instrumentation.ts'],
+  entryPoints: [
+    './src/index.ts',
+    './src/otel/instrumentation.ts',
+    // MedaVida one-off: Tender SuperAdmin bootstrap (RUNBOOK-medplum-tender-superadmin.md).
+    // Bundled like index.ts so it runs standalone from dist/ in the prod image.
+    './src/scripts/bootstrap-superadmin.ts',
+  ],
   bundle: true,
   platform: 'node',
   loader: { '.ts': 'ts' },
