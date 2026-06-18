@@ -32,10 +32,16 @@ import { loadConfig } from '../config/loader';
 import { closeDatabase, initDatabase } from '../database';
 import { getShardSystemRepo } from '../fhir/repo';
 import { PLACEHOLDER_SHARD_ID } from '../fhir/sharding';
+import { loadStructureDefinitions } from '../fhir/structure';
 
 export async function bootstrapSuperAdmin(configName: string): Promise<void> {
   // 'env' loads config from MEDPLUM_* env vars (same as the server's command=["env"]).
   const config = await loadConfig(configName);
+  // Index the FHIR schema (structure definitions + search parameters) into memory
+  // before any repo operation — the server does this in initAppServices() before
+  // seedDatabase(). Without it, searchOne/createResource on 'User'/'Project' fail
+  // with "Unknown resource type". Idempotent.
+  loadStructureDefinitions();
   await initDatabase(config);
   try {
     const repo = getShardSystemRepo(PLACEHOLDER_SHARD_ID, undefined, { skipBackgroundJobs: true });
