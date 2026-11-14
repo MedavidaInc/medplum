@@ -56,7 +56,7 @@
     "@opentelemetry/instrumentation-dataloader": "0.33.0",
     "@opentelemetry/instrumentation-express": "0.64.0",
     "@opentelemetry/instrumentation-graphql": "0.64.0",
-    "@opentelemetry/instrumentation-http": "0.216.0",
+    "@opentelemetry/instrumentation-http": "0.222.0",
     "@opentelemetry/instrumentation-ioredis": "0.64.0",
     "@opentelemetry/instrumentation-pg": "0.68.0",
     "@opentelemetry/instrumentation-runtime-node": "0.29.0",
